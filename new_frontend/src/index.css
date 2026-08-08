@@ -1,0 +1,283 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/* Theme palettes (CSS variables)                                      */
+/*                                                                     */
+/*  :root  = Light B2B Industrial — #F8FAFC canvas / #FFFFFF surface   */
+/*  .dark  = Obsidian Editorial     — #080B10 canvas / #11161F surface */
+/*                                                                     */
+/* Every Tailwind color token resolves to one of these variables, so   */
+/* toggling the `dark` class on <html> re-themes the whole app. Values */
+/* are space-separated RGB triplets for Tailwind's <alpha-value>.      */
+/* ------------------------------------------------------------------ */
+
+:root {
+  color-scheme: light;
+
+  /* Canvas & surfaces */
+  --canvas: 248 250 252; /* #F8FAFC */
+  --surface: 255 255 255; /* #FFFFFF */
+  --surface-dim: 241 245 249; /* #F1F5F9 */
+  --surface-bright: 255 255 255;
+  --surface-container-lowest: 255 255 255;
+  --surface-container-low: 248 250 252; /* #F8FAFC */
+  --surface-container: 244 247 250; /* #F4F7FA */
+  --surface-container-high: 241 245 249; /* #F1F5F9 */
+  --surface-container-highest: 226 232 240; /* #E2E8F0 */
+  --surface-variant: 226 232 240; /* #E2E8F0 */
+
+  /* Ink */
+  --ink: 15 23 42; /* #0F172A */
+  --ink-2: 71 85 105; /* #475569 */
+  --ink-3: 100 116 139; /* #64748B */
+  --line: 71 85 105; /* slate-600 — used at low alpha for hairlines */
+  --outline-variant: 203 213 225; /* #CBD5E1 */
+
+  /* Primary / buttons */
+  --on-primary: 255 255 255;
+  --primary-container: 219 234 254; /* #DBEAFE */
+  --on-primary-container: 30 64 175; /* #1E40AF */
+  --primary-fixed: 15 23 42; /* #0F172A — ink button */
+  --primary-fixed-dim: 30 41 59; /* #1E293B */
+  --on-primary-fixed: 255 255 255;
+
+  --secondary: 71 85 105; /* #475569 */
+  --on-secondary: 255 255 255;
+  --secondary-container: 226 232 240; /* #E2E8F0 */
+  --on-secondary-container: 30 41 59; /* #1E293B */
+
+  --tertiary-container: 236 253 245; /* #ECFDF5 */
+  --on-tertiary-container: 20 83 45; /* #14532D */
+
+  /* Accents & status */
+  --accent: 77 124 15; /* #4D7C0F — olive */
+  --accent-dim: 101 163 13; /* #65A30D */
+  --on-tertiary-fixed: 255 255 255;
+  --steel: 47 85 107; /* #2F556B */
+  --error: 220 38 38; /* #DC2626 */
+  --on-error: 255 255 255;
+  --error-container: 254 226 226; /* #FEE2E2 */
+  --on-error-container: 127 29 29; /* #7F1D1D */
+
+  /* Elevation & scrollbars */
+  --shadow-tactile: 0 8px 30px -12px rgba(51, 65, 85, 0.16);
+  --shadow-tactile-lg: 0 20px 50px -15px rgba(51, 65, 85, 0.2);
+  --sb-track: 241 245 249;
+  --sb-thumb: 203 213 225;
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* Canvas & surfaces — obsidian */
+  --canvas: 8 11 16; /* #080B10 */
+  --surface: 17 22 31; /* #11161F */
+  --surface-dim: 8 11 16;
+  --surface-bright: 29 38 52; /* #1D2634 */
+  --surface-container-lowest: 6 8 13; /* #06080D */
+  --surface-container-low: 16 22 31; /* #10161F */
+  --surface-container: 21 29 40; /* #151D28 */
+  --surface-container-high: 27 36 50; /* #1B2432 */
+  --surface-container-highest: 35 47 64; /* #232F40 */
+  --surface-variant: 35 47 64; /* #232F40 */
+
+  /* Ink */
+  --ink: 230 233 238; /* #E6E9EE */
+  --ink-2: 167 176 189; /* #A7B0BD */
+  --ink-3: 124 135 150; /* #7C8796 */
+  --line: 255 255 255; /* white — used at low alpha for hairlines */
+  --outline-variant: 43 53 67; /* #2B3543 */
+
+  /* Primary / buttons */
+  --on-primary: 49 49 44;
+  --primary-container: 229 226 219; /* #E5E2DB — bone */
+  --on-primary-container: 69 74 82;
+  --primary-fixed: 244 241 234; /* #F4F1EA — bone button */
+  --primary-fixed-dim: 229 226 219; /* #E5E2DB */
+  --on-primary-fixed: 16 18 22; /* ink on bone */
+
+  --secondary: 200 198 197; /* #C8C6C5 */
+  --on-secondary: 49 48 48;
+  --secondary-container: 71 71 70; /* #474746 */
+  --on-secondary-container: 183 180 180; /* #B7B4B4 */
+
+  --tertiary-container: 225 229 201; /* #E1E5C9 */
+  --on-tertiary-container: 98 103 80; /* #626750 */
+
+  /* Accents & status */
+  --accent: 225 229 201; /* #E1E5C9 — olive */
+  --accent-dim: 196 201 174; /* #C4C9AE */
+  --on-tertiary-fixed: 25 29 12; /* #191D0C */
+  --steel: 96 119 138; /* #60778A */
+  --error: 255 180 171; /* #FFB4AB */
+  --on-error: 105 0 5; /* #690005 */
+  --error-container: 147 0 10; /* #93000A */
+  --on-error-container: 255 218 214; /* #FFDAD6 */
+
+  /* Elevation & scrollbars */
+  --shadow-tactile: 0 20px 40px -10px rgba(0, 0, 0, 0.5);
+  --shadow-tactile-lg: 0 30px 60px -15px rgba(0, 0, 0, 0.6);
+  --sb-track: 8 11 16;
+  --sb-thumb: 35 47 64;
+}
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                */
+/* ------------------------------------------------------------------ */
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-on-background font-sans text-body-md antialiased overflow-x-hidden;
+    background-color: rgb(var(--canvas));
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  }
+
+  ::selection {
+    @apply bg-primary-container text-on-primary-container;
+  }
+
+  /* Minimal technical scrollbars */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: rgb(var(--sb-track));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--sb-thumb));
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--outline-variant));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Smooth theme transitions (enabled briefly by ThemeProvider)         */
+/* ------------------------------------------------------------------ */
+
+html.theme-anim *,
+html.theme-anim *::before,
+html.theme-anim *::after {
+  transition:
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    fill 0.25s ease,
+    stroke 0.25s ease,
+    box-shadow 0.25s ease !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* Components — tactile surfaces, buttons, fields, tables              */
+/* ------------------------------------------------------------------ */
+
+@layer components {
+  .tactile-surface {
+    @apply bg-surface rounded-lg border border-line/10;
+    box-shadow: var(--shadow-tactile);
+  }
+
+  .tactile-surface-elevated {
+    @apply bg-surface-container rounded-lg border border-line/20;
+    box-shadow: var(--shadow-tactile-lg);
+  }
+
+  .label-caps {
+    @apply font-sans text-label-caps uppercase tracking-[0.08em];
+  }
+
+  /* Primary CTA — bone button + ink text in dark; ink button + white text in light */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 bg-primary-fixed text-on-primary-fixed
+      px-6 py-3 rounded font-sans text-label-caps uppercase tracking-[0.08em]
+      hover:bg-primary-fixed-dim transition-colors duration-300
+      disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary-fixed
+      focus-visible:outline focus-visible:outline-2 focus-visible:outline-tertiary-fixed focus-visible:outline-offset-2;
+  }
+
+  /* Ghost CTA — hairline border */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 rounded font-sans text-label-caps
+      uppercase tracking-[0.08em] text-primary border border-outline-variant
+      hover:bg-surface-variant hover:border-outline transition-colors duration-300
+      disabled:opacity-40 disabled:cursor-not-allowed
+      focus-visible:outline focus-visible:outline-2 focus-visible:outline-tertiary-fixed focus-visible:outline-offset-2;
+  }
+
+  /* High-density form field */
+  .field-label {
+    @apply block font-sans text-label-caps text-on-surface-variant uppercase mb-2;
+  }
+
+  .field-input {
+    @apply w-full bg-surface-container-low border border-outline-variant rounded px-4 py-3
+      font-sans text-body-md text-primary placeholder:text-outline
+      focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/20
+      transition-colors duration-200;
+  }
+
+  .field-input[type='file'] {
+    @apply cursor-pointer file:mr-4 file:rounded file:border-0 file:bg-surface-container-high
+      file:px-3 file:py-1.5 file:font-sans file:text-label-caps file:uppercase file:tracking-wider
+      file:text-on-surface-variant hover:file:bg-surface-container-highest;
+  }
+
+  select.field-input {
+    @apply appearance-none pr-10 bg-no-repeat;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748B' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-position: right 1rem center;
+  }
+
+  .dashed-border-subtle {
+    background-image: repeating-linear-gradient(
+        0deg,
+        rgb(var(--line) / 0.35),
+        rgb(var(--line) / 0.35) 4px,
+        transparent 4px,
+        transparent 8px
+      ),
+      repeating-linear-gradient(90deg, rgb(var(--line) / 0.35), rgb(var(--line) / 0.35) 4px, transparent 4px, transparent 8px),
+      repeating-linear-gradient(180deg, rgb(var(--line) / 0.35), rgb(var(--line) / 0.35) 4px, transparent 4px, transparent 8px),
+      repeating-linear-gradient(270deg, rgb(var(--line) / 0.35), rgb(var(--line) / 0.35) 4px, transparent 4px, transparent 8px);
+    background-size:
+      1px 100%,
+      100% 1px,
+      1px 100%,
+      100% 1px;
+    background-position:
+      0 0,
+      0 0,
+      100% 0,
+      0 100%;
+    background-repeat: no-repeat;
+  }
+
+  .technical-line {
+    background-image: linear-gradient(to right, rgb(var(--line) / 0.2) 50%, transparent 50%);
+    background-size: 8px 1px;
+    background-repeat: repeat-x;
+  }
+
+  .technical-line-v {
+    background-image: linear-gradient(to bottom, rgb(var(--line) / 0.2) 50%, transparent 50%);
+    background-size: 1px 8px;
+    background-repeat: repeat-y;
+  }
+
+  /* Editorial result table */
+  .technical-table th,
+  .technical-table td {
+    @apply border-b border-line/10;
+  }
+  .technical-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+}

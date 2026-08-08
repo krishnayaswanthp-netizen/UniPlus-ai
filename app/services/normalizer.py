@@ -1,9 +1,10 @@
 """Data normalization service (units via Pint, fuzzy matching via RapidFuzz).
 
 ``UnitNormalizer`` turns free-form spec values taken from product documents
-(e.g. ``"10mm"``, ``"1/2 inch"``, ``"120 VAC"``, ``"800 CFM"``) into a
-deterministic ``(normalized_value, unit)`` pair so downstream consumers
-(enrichment, comparison, search) can rely on consistent units.
+(e.g. ``"10mm"``, ``"1/2 inch"``, ``"120 VAC"``, ``"800 CFM"``,
+``"5.4 sq in"``) into a deterministic ``(normalized_value, unit)`` pair so
+downstream consumers (enrichment, comparison, search) can rely on
+consistent units.
 """
 
 from __future__ import annotations
@@ -32,6 +33,17 @@ UNIT_ALIASES: dict[str, tuple[str, ...]] = {
     "meter": ("m", "meter", "meters", "metre", "metres"),
     "inch": ("in", "inch", "inches", '"'),
     "foot": ("ft", "foot", "feet", "'"),
+    "square_inch": ("sq in", "sqin", "square inch", "square inches"),
+    "square_foot": ("sq ft", "sqft", "square foot", "square feet"),
+    "square_meter": ("sq m", "sqm", "square meter", "square meters", "square metre", "square metres"),
+    "square_centimeter": (
+        "sq cm",
+        "sqcm",
+        "square centimeter",
+        "square centimeters",
+        "square centimetre",
+        "square centimetres",
+    ),
     "volt": ("v", "volt", "volts", "vac", "vdc"),
     "watt": ("w", "watt", "watts"),
     "kilowatt": ("kw", "kilowatt", "kilowatts"),
@@ -50,6 +62,10 @@ UNIT_SYMBOLS: dict[str, str] = {
     "meter": "m",
     "inch": "in",
     "foot": "ft",
+    "square_inch": "sq in",
+    "square_foot": "sq ft",
+    "square_meter": "sq m",
+    "square_centimeter": "sq cm",
     "volt": "V",
     "watt": "W",
     "kilowatt": "kW",
@@ -114,6 +130,21 @@ _CFM_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Area expressions, e.g. "5.4 sq in", "12 sq ft", "10 sq m",
+#: "2.5 square feet". Anchored to the full string so plain lengths like
+#: "10 m" are never misread as areas — they keep flowing to the generic
+#: length path and convert to millimeters. The ``square_*`` entries in
+#: ``UNIT_ALIASES`` make this rule a fast explicit path for the same
+#: strings the generic parser would resolve — keep both in sync.
+_AREA_RE = re.compile(
+    r"^(?P<value>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>sq\s*(?:in|ft|m|cm)|square\s*"
+    r"(?:inch|inches|foot|feet|meter|meters|metre|metres|"
+    r"centimeter|centimeters|centimetre|centimetres))"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
 
 def _parse_value(token: str) -> float | None:
     """Convert a decimal/fraction value token to a float (``None`` if invalid)."""
@@ -146,8 +177,8 @@ class UnitNormalizer:
     ``(normalized_value, unit)`` pair.  Lengths are expressed in millimeters
     (metric input) or inches (imperial input); electrical and airflow values
     keep their natural magnitude with a canonical unit symbol.  Compound
-    HVAC/Electrical specs (threads, tonnage, voltage ranges, airflow CFM) are
-    handled by dedicated regex fallback rules.
+    HVAC/Electrical specs (threads, tonnage, voltage ranges, airflow CFM)
+    and area expressions are handled by dedicated regex fallback rules.
     """
 
     # -- public API --------------------------------------------------------
@@ -184,6 +215,14 @@ class UnitNormalizer:
         match = _CFM_RE.match(text)
         if match:
             return self._normalize_cfm(match)
+
+        # Area expressions ("5.4 sq in", "12 sq ft", "10 sq m") — value and
+        # unit are split apart; the magnitude is kept as written.
+        match = _AREA_RE.match(text)
+        if match:
+            normalized = self._normalize_area(match)
+            if normalized is not None:
+                return normalized
 
         # 2) Mixed numbers ("1 1/2 inch") — checked before generic parsing so
         #    the whole+space+fraction pattern isn't split by ``_VALUE_RE``.
@@ -249,6 +288,21 @@ class UnitNormalizer:
     def _normalize_cfm(self, match: re.Match[str]) -> tuple[str, str]:
         """Normalize airflow to cubic feet per minute (``800 CFM``)."""
         return _fmt(float(match.group("value"))), "CFM"
+
+    def _normalize_area(self, match: re.Match[str]) -> tuple[str, str] | None:
+        """Split area specs into value + canonical unit (``5.4 sq in``).
+
+        Returns ``None`` when the unit token cannot be resolved, letting the
+        generic parse path take over (should not happen given the anchored
+        ``_AREA_RE``, but kept safe).
+        """
+        magnitude = _parse_value(match.group("value"))
+        if magnitude is None:
+            return None
+        canonical = self._resolve_unit(match.group("unit").strip())
+        if canonical is None:
+            return None
+        return _fmt(magnitude), UNIT_SYMBOLS.get(canonical, canonical)
 
     def _normalize_mixed_fraction(
         self, match: re.Match[str],

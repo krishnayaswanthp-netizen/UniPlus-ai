@@ -6,8 +6,13 @@ Registers the product-enrichment API:
   (``ProductEnrichmentRequest``) and/or an uploaded PDF datasheet.
 - ``POST /api/v1/enrich/batch``   — enrich many products from an uploaded
   CSV / Excel file, processed concurrently with a bounded semaphore.
-- ``GET  /api/v1/export/excel``   — render enriched results as a
+- ``POST /api/v1/export/excel``   — render enriched results as a
   downloadable ``.xlsx`` workbook (``openpyxl``).
+
+  The export endpoint accepts the enriched-product array as a JSON request
+  body (or, for small payloads, a ``data`` query parameter). It is ``POST``
+  because browser clients must not rely on ``GET`` request bodies, and large
+  batches exceed URL length limits.
 
 The enrichment pipeline itself lives in :func:`_enrich_single_product` and
 reuses the existing services: ``WhitelistedSearchScraper`` (web search +
@@ -431,7 +436,7 @@ async def enrich_batch(file: UploadFile = File(...)) -> BatchEnrichmentResponse:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/v1/export/excel
+# POST /api/v1/export/excel
 # ---------------------------------------------------------------------------
 
 
@@ -531,16 +536,21 @@ def _render_workbook(
     return buffer
 
 
-@app.get("/api/v1/export/excel")
+@app.post("/api/v1/export/excel")
 async def export_excel(
     request: Request,
     data: str | None = Query(
         default=None,
         description="JSON-encoded array of enriched product records. "
-        "Alternative: send the array as the request body.",
+        "Alternative (preferred): send the array as the JSON request body.",
     ),
 ) -> StreamingResponse:
-    """Render enriched results as a downloadable ``.xlsx`` workbook."""
+    """Render enriched results as a downloadable ``.xlsx`` workbook.
+
+    Expects a JSON array of enriched product records, sent either as the
+    request body (recommended — avoids URL-length limits on large batches)
+    or as the ``data`` query parameter.
+    """
     if data is not None:
         try:
             payload = json.loads(data)
@@ -553,8 +563,8 @@ async def export_excel(
         if not raw_body:
             raise HTTPException(
                 status_code=422,
-                detail="Provide enriched results via the 'data' query parameter "
-                "(JSON-encoded array) or a JSON request body",
+                detail="Provide enriched results via a JSON request body "
+                "(array of enriched product records) or the 'data' query parameter",
             )
         try:
             payload = json.loads(raw_body)

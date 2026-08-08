@@ -176,3 +176,50 @@ def test_multi_group_thousands_separator(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("1,234,567 CFM")
     assert value == "1234567"
     assert unit == "CFM"
+
+
+def test_area_square_inches(normalizer: UnitNormalizer) -> None:
+    """Split an area spec into its numeric value and canonical unit."""
+    value, unit = normalizer.normalize_field("5.4 sq in")
+    assert value == "5.4"
+    assert unit == "sq in"
+
+
+def test_area_square_feet(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("12 sq ft")
+    assert value == "12"
+    assert unit == "sq ft"
+
+
+def test_area_square_meters(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("10 sq m")
+    assert value == "10"
+    assert unit == "sq m"
+
+
+def test_area_square_centimeters(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("250 sq cm")
+    assert value == "250"
+    assert unit == "sq cm"
+
+
+def test_area_long_form_spelling(normalizer: UnitNormalizer) -> None:
+    """Long-form "square feet" maps to the canonical "sq ft" symbol."""
+    value, unit = normalizer.normalize_field("2.5 square feet")
+    assert value == "2.5"
+    assert unit == "sq ft"
+
+
+def test_area_case_insensitive(normalizer: UnitNormalizer) -> None:
+    """Unit tokens are matched case-insensitively (IGNORECASE + lower())."""
+    value, unit = normalizer.normalize_field("5.4 SQ IN")
+    assert value == "5.4"
+    assert unit == "sq in"
+
+
+def test_area_does_not_misread_plain_length(normalizer: UnitNormalizer) -> None:
+    """A plain length ("10 m") must not be treated as an area — it still
+    converts to millimeters through the generic length path."""
+    value, unit = normalizer.normalize_field("10 m")
+    assert value == "10000"
+    assert unit == "mm"

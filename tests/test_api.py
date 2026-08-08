@@ -4,7 +4,7 @@ Covers the three registered endpoints:
 
 - ``POST /api/v1/enrich/single``  — JSON payload and multipart PDF uploads.
 - ``POST /api/v1/enrich/batch``   — CSV and Excel uploads (incl. failure rows).
-- ``GET  /api/v1/export/excel``   — workbook generation and error handling.
+- ``POST /api/v1/export/excel``   — workbook generation and error handling.
 
 All network/LLM dependencies are faked via monkeypatched module-level
 pipeline objects, so the suite runs fully offline and without API keys.
@@ -329,7 +329,7 @@ def test_batch_rejects_empty_upload(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/v1/export/excel
+# POST /api/v1/export/excel
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +358,7 @@ def _sample_products() -> list[dict[str, object]]:
 
 
 def test_export_excel_generates_workbook(client: TestClient) -> None:
-    response = client.get(
+    response = client.post(
         "/api/v1/export/excel",
         params={"data": json.dumps(_sample_products())},
     )
@@ -387,8 +387,7 @@ def test_export_excel_generates_workbook(client: TestClient) -> None:
 
 
 def test_export_excel_accepts_json_body(client: TestClient) -> None:
-    response = client.request(
-        "GET",
+    response = client.post(
         "/api/v1/export/excel",
         content=json.dumps(_sample_products()),
         headers={"Content-Type": "application/json"},
@@ -398,12 +397,12 @@ def test_export_excel_accepts_json_body(client: TestClient) -> None:
 
 
 def test_export_excel_rejects_invalid_json(client: TestClient) -> None:
-    response = client.get("/api/v1/export/excel", params={"data": "{not json"})
+    response = client.post("/api/v1/export/excel", params={"data": "{not json"})
     assert response.status_code == 400
 
 
 def test_export_excel_rejects_non_list_data(client: TestClient) -> None:
-    response = client.get(
+    response = client.post(
         "/api/v1/export/excel",
         params={"data": json.dumps({"sku_id": "not-a-list"})},
     )
@@ -411,5 +410,14 @@ def test_export_excel_rejects_non_list_data(client: TestClient) -> None:
 
 
 def test_export_excel_rejects_missing_data(client: TestClient) -> None:
-    response = client.get("/api/v1/export/excel")
+    response = client.post("/api/v1/export/excel")
     assert response.status_code == 422
+
+
+def test_export_excel_rejects_get_method(client: TestClient) -> None:
+    """Export is a POST endpoint — GET must be rejected (405)."""
+    response = client.get(
+        "/api/v1/export/excel",
+        params={"data": json.dumps(_sample_products())},
+    )
+    assert response.status_code == 405
