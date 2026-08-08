@@ -1,0 +1,24 @@
+# Environment secrets (CRITICAL)
+.env
+.env.local
+*.env
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Testing & Cache artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+*.swp

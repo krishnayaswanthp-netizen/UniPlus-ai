@@ -1,0 +1,247 @@
+"""Data normalization service (units via Pint, fuzzy matching via RapidFuzz).
+
+``UnitNormalizer`` turns free-form spec values taken from product documents
+(e.g. ``"10mm"``, ``"1/2 inch"``, ``"120 VAC"``, ``"800 CFM"``) into a
+deterministic ``(normalized_value, unit)`` pair so downstream consumers
+(enrichment, comparison, search) can rely on consistent units.
+"""
+
+from __future__ import annotations
+
+import re
+
+import pint
+from rapidfuzz import fuzz
+
+# ---------------------------------------------------------------------------
+# Module-level building blocks
+# ---------------------------------------------------------------------------
+
+#: Shared Pint registry — creating one parses the unit definition file and is
+#: expensive (~1s), so a single module-level instance is reused by all
+#: ``UnitNormalizer`` instances.
+_UREG = pint.UnitRegistry()
+
+#: Minimum RapidFuzz ratio for a fuzzy unit-alias match to be accepted.
+_FUZZY_THRESHOLD = 85
+
+#: Canonical unit name -> human-written aliases (exact matches win).
+UNIT_ALIASES: dict[str, tuple[str, ...]] = {
+    "millimeter": ("mm", "millimeter", "millimeters", "millimetre", "millimetres"),
+    "centimeter": ("cm", "centimeter", "centimeters", "centimetre", "centimetres"),
+    "meter": ("m", "meter", "meters", "metre", "metres"),
+    "inch": ("in", "inch", "inches", '"'),
+    "foot": ("ft", "foot", "feet", "'"),
+    "volt": ("v", "volt", "volts", "vac", "vdc"),
+    "watt": ("w", "watt", "watts"),
+    "kilowatt": ("kw", "kilowatt", "kilowatts"),
+    "ampere": ("a", "amp", "amps", "ampere", "amperes"),
+    "hertz": ("hz", "hertz"),
+    "cfm": ("cfm", "cubic feet per minute", "cubic foot per minute"),
+}
+
+#: Canonical unit -> short symbol used in the normalized output.
+UNIT_SYMBOLS: dict[str, str] = {
+    "millimeter": "mm",
+    "centimeter": "cm",
+    "meter": "m",
+    "inch": "in",
+    "foot": "ft",
+    "volt": "V",
+    "watt": "W",
+    "kilowatt": "kW",
+    "ampere": "A",
+    "hertz": "Hz",
+    "cfm": "CFM",
+}
+
+#: Lengths are normalized to millimeters (metric) or inches (imperial).
+_METRIC_LENGTH_UNITS = frozenset({"millimeter", "centimeter", "meter"})
+_IMPERIAL_LENGTH_UNITS = frozenset({"inch", "foot"})
+
+#: One ton of refrigeration == 12,000 BTU/hour (HVAC standard).
+_BTUS_PER_TON = 12_000.0
+
+#: Matches a leading value: decimal, fraction, or plain integer.
+_VALUE_RE = re.compile(
+    r"^(?P<value>[+-]?(?:\d+\.\d*|\.\d+|\d+/\d+|\d+))\s*(?P<unit>.*)$"
+)
+
+#: Thread spec, e.g. "1/2-14 NPT", "3/4-16 UNF", "1/4-20 UNC".
+_THREAD_RE = re.compile(
+    r"^(?P<diam>\d+(?:\.\d+)?|\d+/\d+)\s*-\s*(?P<tpi>\d+)\s*"
+    r"(?P<form>NPT|NPTF|NPSM|UNF|UNC|UNEF|BSP|BSPT)\b",
+    re.IGNORECASE,
+)
+
+#: HVAC capacity in tons of refrigeration, e.g. "3.5 tons".
+_TONNAGE_RE = re.compile(r"^(?P<value>\d+(?:\.\d+)?)\s*tons?\b", re.IGNORECASE)
+
+#: Voltage spec including ranges, e.g. "120 V", "24 VDC", "120/240 V".
+_VOLTAGE_RE = re.compile(
+    r"^(?P<v1>\d+(?:\.\d+)?)(?P<sep>\s*/\s*|\s*-\s*)?"
+    r"(?P<v2>\d+(?:\.\d+)?)?\s*(?P<suffix>VAC|VDC|V)\b",
+    re.IGNORECASE,
+)
+
+#: Airflow in cubic feet per minute, e.g. "800 CFM", "1200 cubic feet per
+#: minute". Anchored to the full string so trailing qualifiers pass through
+#: untouched rather than being silently truncated.
+_CFM_RE = re.compile(
+    r"^(?P<value>\d+(?:\.\d+)?)\s*(?:CFM|cubic feet? per minute)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_value(token: str) -> float | None:
+    """Convert a decimal/fraction value token to a float (``None`` if invalid)."""
+    token = token.strip()
+    if "/" in token:
+        try:
+            numerator, denominator = token.split("/", maxsplit=1)
+            return float(numerator) / float(denominator)
+        except (ValueError, ZeroDivisionError):
+            return None
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _fmt(magnitude: float) -> str:
+    """Format a magnitude without float artifacts (``10.0`` -> ``'10'``)."""
+    rounded = round(magnitude, 4)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return f"{rounded:.4f}".rstrip("0").rstrip(".")
+
+
+class UnitNormalizer:
+    """Deterministic normalization of product spec values.
+
+    Parses dimension/value strings such as ``"10mm"``, ``"1/2 inch"``,
+    ``"120 VAC"`` or ``"800 CFM"`` and returns a canonical
+    ``(normalized_value, unit)`` pair.  Lengths are expressed in millimeters
+    (metric input) or inches (imperial input); electrical and airflow values
+    keep their natural magnitude with a canonical unit symbol.  Compound
+    HVAC/Electrical specs (threads, tonnage, voltage ranges, airflow CFM) are
+    handled by dedicated regex fallback rules.
+    """
+
+    # -- public API --------------------------------------------------------
+
+    def normalize_field(self, raw_value: str) -> tuple[str, str | None]:
+        """Normalize *raw_value* into a ``(normalized_value, unit)`` tuple.
+
+        Returns ``(raw_value, None)`` unchanged when the value cannot be
+        parsed, so callers can safely fall back to the original text.
+        """
+        text = raw_value.strip()
+        if not text:
+            return text, None
+
+        # 1) Fallback rules for compound HVAC / Electrical specs.
+        match = _THREAD_RE.match(text)
+        if match:
+            return self._normalize_thread(match)
+
+        match = _TONNAGE_RE.match(text)
+        if match:
+            return self._normalize_tonnage(match)
+
+        match = _VOLTAGE_RE.match(text)
+        if match:
+            return self._normalize_voltage(match)
+
+        match = _CFM_RE.match(text)
+        if match:
+            return self._normalize_cfm(match)
+
+        # 2) Generic "<number> <unit>" parsing (Pint-backed).
+        match = _VALUE_RE.match(text)
+        if not match:
+            return text, None
+
+        magnitude = _parse_value(match.group("value"))
+        if magnitude is None:
+            return text, None
+
+        unit_token = match.group("unit").strip()
+        if not unit_token:
+            return _fmt(magnitude), None
+
+        canonical = self._resolve_unit(unit_token)
+        if canonical is None:
+            return text, None
+
+        return self._convert(canonical, magnitude)
+
+    # -- fallback rule handlers -------------------------------------------
+
+    def _normalize_thread(self, match: re.Match[str]) -> tuple[str, None]:
+        """Standardize ``1/2-14 NPT`` -> ``0.5-14 NPT`` (diameter in inches)."""
+        diameter = _parse_value(match.group("diam"))
+        if diameter is None:
+            return match.group(0), None
+        tpi = match.group("tpi")
+        form = match.group("form").upper()
+        return f"{_fmt(diameter)}-{tpi} {form}", None
+
+    def _normalize_tonnage(self, match: re.Match[str]) -> tuple[str, str]:
+        """Convert HVAC tonnage to BTU/hour (``3.5 tons`` -> ``42000 BTU/h``)."""
+        tons = _parse_value(match.group("value"))
+        if tons is None:
+            return match.group(0), "BTU/h"
+        return _fmt(tons * _BTUS_PER_TON), "BTU/h"
+
+    def _normalize_voltage(self, match: re.Match[str]) -> tuple[str, str]:
+        """Standardize voltage specs (``120 VAC`` -> ``120 V``).
+
+        Ranges keep their original separator (``120/240 V`` or ``120-277 V``).
+        """
+        v1 = _fmt(float(match.group("v1")))
+        v2 = match.group("v2")
+        if v2 is None:
+            return v1, "V"
+        separator = (match.group("sep") or "/").strip() or "/"
+        return f"{v1}{separator}{_fmt(float(v2))}", "V"
+
+    def _normalize_cfm(self, match: re.Match[str]) -> tuple[str, str]:
+        """Normalize airflow to cubic feet per minute (``800 CFM``)."""
+        return _fmt(float(match.group("value"))), "CFM"
+
+    # -- helpers -----------------------------------------------------------
+
+    def _resolve_unit(self, token: str) -> str | None:
+        """Map a raw unit token to a canonical unit name (fuzzy-tolerant)."""
+        token = token.strip().lower()
+        if not token:
+            return None
+
+        # Exact alias match first (e.g. "mm", "VAC", '"').
+        for canonical, aliases in UNIT_ALIASES.items():
+            if token in aliases:
+                return canonical
+
+        # Fuzzy match for typos / alternate spellings (e.g. "millmeters").
+        best_score, best_canonical = 0, None
+        for canonical, aliases in UNIT_ALIASES.items():
+            for alias in aliases:
+                score = fuzz.ratio(token, alias)
+                if score > best_score:
+                    best_score, best_canonical = score, canonical
+        return best_canonical if best_score >= _FUZZY_THRESHOLD else None
+
+    def _convert(self, canonical: str, magnitude: float) -> tuple[str, str]:
+        """Convert *magnitude* to the canonical display unit for *canonical*."""
+        ureg = _UREG
+
+        if canonical in _METRIC_LENGTH_UNITS:
+            quantity = magnitude * getattr(ureg, canonical)
+            return _fmt(quantity.to(ureg.millimeter).magnitude), UNIT_SYMBOLS["millimeter"]
+
+        if canonical in _IMPERIAL_LENGTH_UNITS:
+            quantity = magnitude * getattr(ureg, canonical)
+            return _fmt(quantity.to(ureg.inch).magnitude), UNIT_SYMBOLS["inch"]
+
+        return _fmt(magnitude), UNIT_SYMBOLS.get(canonical, canonical)

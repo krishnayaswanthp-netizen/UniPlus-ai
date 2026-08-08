@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+instructor
+pymupdf
+pint
+rapidfuzz
+httpx
+python-dotenv
+streamlit
+pytest
+groq
+duckduckgo-search
+beautifulsoup4
+openpyxl
+python-multipart
