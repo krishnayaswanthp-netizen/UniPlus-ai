@@ -359,3 +359,144 @@ def test_structured_extractor_processes_fallback_text(
     assert result[0].source_url == fallback["source_url"]
     assert result[0].normalized_value == "24"
     assert result[0].unit == "V"
+
+
+# ---------------------------------------------------------------------------
+# LLM request retry/backoff behavior
+# ---------------------------------------------------------------------------
+
+
+class _FakeRateLimitError(Exception):
+    """Minimal stand-in for a Groq 429 with a ``status_code`` attribute."""
+
+    status_code = 429
+
+
+class _FakeServerError(Exception):
+    """Minimal stand-in for a Groq 5xx with a ``status_code`` attribute."""
+
+    status_code = 503
+
+
+def _fake_voltage_attribute() -> IndustrialAttribute:
+    return IndustrialAttribute(
+        field_name="voltage",
+        raw_value="120 VAC",
+        normalized_value="120",
+        unit="V",
+        confidence_score=0.9,
+        source_url="https://example.com/spec",
+    )
+
+
+def test_request_attributes_retries_transient_errors_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """429/5xx are retried with backoff on the same model, then succeed."""
+    extractor = StructuredExtractor(api_key="test-key")
+    monkeypatch.setattr("app.services.extractor.time.sleep", lambda _seconds: None)
+    calls: list[str] = []
+
+    def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append(model)
+        if len(calls) < 3:
+            raise _FakeRateLimitError("rate limited")
+        return [_fake_voltage_attribute()]
+
+    monkeypatch.setattr(extractor.client.chat.completions, "create", fake_create)
+
+    result = extractor._request_attributes([{"role": "user", "content": "x"}])
+
+    assert len(calls) == 3  # two backoff retries, all on the primary model
+    assert calls == [extractor.model] * 3
+    assert len(result) == 1
+
+
+def test_request_attributes_moves_to_fallback_on_non_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A validation/auth error skips retries and tries the fallback model."""
+    extractor = StructuredExtractor(api_key="test-key")
+    calls: list[str] = []
+
+    def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append(model)
+        raise ValueError("schema validation failed")
+
+    monkeypatch.setattr(extractor.client.chat.completions, "create", fake_create)
+
+    with pytest.raises(RuntimeError, match="schema validation failed"):
+        extractor._request_attributes([{"role": "user", "content": "x"}])
+
+    assert calls == [extractor.model, extractor.fallback_model]
+
+
+def test_request_attributes_preserves_error_detail_on_total_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final RuntimeError carries the underlying API error message."""
+    extractor = StructuredExtractor(api_key="test-key")
+    monkeypatch.setattr("app.services.extractor.time.sleep", lambda _seconds: None)
+
+    def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        raise _FakeServerError("upstream gateway timeout")
+
+    monkeypatch.setattr(extractor.client.chat.completions, "create", fake_create)
+
+    with pytest.raises(RuntimeError, match="upstream gateway timeout"):
+        extractor._request_attributes([{"role": "user", "content": "x"}])
+
+
+def test_request_attributes_retries_5xx_before_switching_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhausted transient retries on the primary then try the fallback."""
+    extractor = StructuredExtractor(api_key="test-key")
+    monkeypatch.setattr("app.services.extractor.time.sleep", lambda _seconds: None)
+    calls: list[str] = []
+
+    def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append(model)
+        raise _FakeServerError("temporarily unavailable")
+
+    monkeypatch.setattr(extractor.client.chat.completions, "create", fake_create)
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        extractor._request_attributes([{"role": "user", "content": "x"}])
+
+    # 3 transient retries on primary, then 3 on the fallback, both exhausted.
+    assert calls == [extractor.model] * 3 + [extractor.fallback_model] * 3
+
+
+def test_request_attributes_switches_to_fallback_after_mixed_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient error (retried) followed by a non-transient one still tries
+    the fallback model rather than aborting."""
+    extractor = StructuredExtractor(api_key="test-key")
+    monkeypatch.setattr("app.services.extractor.time.sleep", lambda _seconds: None)
+    calls: list[str] = []
+
+    def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append(model)
+        if len(calls) == 1:
+            raise _FakeRateLimitError("burst limit")
+        raise ValueError("schema validation failed")
+
+    monkeypatch.setattr(extractor.client.chat.completions, "create", fake_create)
+
+    with pytest.raises(RuntimeError, match="schema validation failed"):
+        extractor._request_attributes([{"role": "user", "content": "x"}])
+
+    # 1 transient retry on primary, then a non-transient error -> fallback tried.
+    assert calls == [extractor.model, extractor.model, extractor.fallback_model]
+
+
+def test_is_retryable_accepts_numeric_string_status() -> None:
+    """String status codes (some clients report "429") are treated as retryable."""
+
+    class _StringStatusError(Exception):
+        status_code = "429"
+
+    assert StructuredExtractor._is_retryable(_StringStatusError("boom")) is True
+    assert StructuredExtractor._is_retryable(ValueError("schema")) is False

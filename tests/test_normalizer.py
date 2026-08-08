@@ -100,3 +100,79 @@ def test_empty_value(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("   ")
     assert value == ""
     assert unit is None
+
+
+def test_mixed_number_fraction(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("1 1/2 inch")
+    assert value == "1.5"
+    assert unit == "in"
+
+
+def test_generic_unit_range(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("20-30 A")
+    assert value == "20-30"
+    assert unit == "A"
+
+
+def test_generic_range_converts_both_endpoints(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("1-2 m")
+    assert value == "1000-2000"
+    assert unit == "mm"
+
+
+def test_thousands_separator_removed(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("1,200 CFM")
+    assert value == "1200"
+    assert unit == "CFM"
+
+
+def test_psi_unit_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("1000 PSI")
+    assert value == "1000"
+    assert unit == "psi"
+
+
+def test_bar_unit_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("2 bar")
+    assert value == "2"
+    assert unit == "bar"
+
+
+def test_degf_unit_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("102 deg F")
+    assert value == "102"
+    assert unit == "°F"
+
+
+def test_unicode_minus_normalized(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("−40 °F")
+    assert value == "-40"
+    assert unit == "°F"
+
+
+def test_fraction_still_parses_after_range_rule(normalizer: UnitNormalizer) -> None:
+    """Dash-only range regex must not break slash fractions."""
+    value, unit = normalizer.normalize_field("1/2 inch")
+    assert value == "0.5"
+    assert unit == "in"
+
+
+def test_range_with_unresolvable_unit_passthrough(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("20-30 XYZ")
+    assert value == "20-30 XYZ"
+    assert unit is None
+
+
+def test_european_decimal_comma_not_misread_as_thousands(
+    normalizer: UnitNormalizer,
+) -> None:
+    """The thousands-separator rule must not corrupt European decimal commas."""
+    value, unit = normalizer.normalize_field("1,5 mm")
+    assert value == "1,5 mm"
+    assert unit is None
+
+
+def test_multi_group_thousands_separator(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("1,234,567 CFM")
+    assert value == "1234567"
+    assert unit == "CFM"

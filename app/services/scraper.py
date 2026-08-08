@@ -201,9 +201,16 @@ class WhitelistedSearchScraper:
     async def search_and_scrape_async(
         self, manufacturer: str, part_number: str
     ) -> list[dict[str, str]]:
-        """Async variant of :meth:`search_and_scrape` for loop-safe callers."""
-        allowed_urls, found_links = self._search_candidates(
-            manufacturer, part_number
+        """Async variant of :meth:`search_and_scrape` for loop-safe callers.
+
+        The DuckDuckGo lookup (``_search_candidates``) is a synchronous
+        network call — ``duckduckgo_search`` has no async API — so it runs in
+        a worker thread. Running it inline would block the event loop for the
+        whole search duration on every request, serializing batch concurrency
+        and freezing every other user of the server.
+        """
+        allowed_urls, found_links = await asyncio.to_thread(
+            self._search_candidates, manufacturer, part_number
         )
         if not allowed_urls:
             if not found_links:
@@ -292,9 +299,11 @@ class WhitelistedSearchScraper:
 
             content_type = response.headers.get("content-type", "").lower()
             if is_direct_pdf_url(url) or "application/pdf" in content_type:
-                raw_content = self._pdf_parser.extract_text_and_tables(response.content)
+                raw_content = await asyncio.to_thread(
+                    self._pdf_parser.extract_text_and_tables, response.content
+                )
             else:
-                raw_content = self._html_to_text(response.text)
+                raw_content = await asyncio.to_thread(self._html_to_text, response.text)
 
             return {
                 "source_url": url,

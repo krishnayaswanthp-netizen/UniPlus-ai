@@ -38,6 +38,9 @@ UNIT_ALIASES: dict[str, tuple[str, ...]] = {
     "ampere": ("a", "amp", "amps", "ampere", "amperes"),
     "hertz": ("hz", "hertz"),
     "cfm": ("cfm", "cubic feet per minute", "cubic foot per minute"),
+    "psi": ("psi", "pounds per square inch", "pound per square inch"),
+    "bar": ("bar", "bars"),
+    "degF": ("degf", "deg f", "degree f", "degrees f", "fahrenheit", "\u00b0f"),
 }
 
 #: Canonical unit -> short symbol used in the normalized output.
@@ -53,6 +56,9 @@ UNIT_SYMBOLS: dict[str, str] = {
     "ampere": "A",
     "hertz": "Hz",
     "cfm": "CFM",
+    "psi": "psi",
+    "bar": "bar",
+    "degF": "\u00b0F",
 }
 
 #: Lengths are normalized to millimeters (metric) or inches (imperial).
@@ -66,6 +72,22 @@ _BTUS_PER_TON = 12_000.0
 _VALUE_RE = re.compile(
     r"^(?P<value>[+-]?(?:\d+\.\d*|\.\d+|\d+/\d+|\d+))\s*(?P<unit>.*)$"
 )
+
+#: Mixed number, e.g. "1 1/2 inch" (whole + space + fraction).
+_MIXED_FRACTION_RE = re.compile(
+    r"^(?P<whole>\d+)\s+(?P<frac>\d+/\d+)\s*(?P<unit>.*)$"
+)
+
+#: Generic dash range, e.g. "20-30 A", "1-2 m". Dash-only by design so
+#: fraction syntax ("1/2 inch") is never misread as a range; slash ranges
+#: for voltages are already handled by ``_VOLTAGE_RE``.
+_RANGE_RE = re.compile(
+    r"^(?P<lo>\d+(?:\.\d+)?)\s*-\s*(?P<hi>\d+(?:\.\d+)?)\s*(?P<unit>[A-Za-z%\"'\u00b0]+)$"
+)
+
+#: Removes thousands separators ("1,200" -> "1200", "1,234,567" -> "1234567")
+#: while leaving genuine decimal commas alone ("1,5 mm" stays "1,5 mm").
+_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3}(?:\D|$))")
 
 #: Thread spec, e.g. "1/2-14 NPT", "3/4-16 UNF", "1/4-20 UNC".
 _THREAD_RE = re.compile(
@@ -140,6 +162,12 @@ class UnitNormalizer:
         if not text:
             return text, None
 
+        # Pre-normalize: Unicode minus (datasheets often use U+2212 instead of
+        # ASCII '-') and thousands separators ("1,200" -> "1200"; European
+        # decimal commas like "1,5" are left untouched).
+        text = text.replace("\u2212", "-")
+        text = _THOUSANDS_RE.sub("", text)
+
         # 1) Fallback rules for compound HVAC / Electrical specs.
         match = _THREAD_RE.match(text)
         if match:
@@ -157,7 +185,19 @@ class UnitNormalizer:
         if match:
             return self._normalize_cfm(match)
 
-        # 2) Generic "<number> <unit>" parsing (Pint-backed).
+        # 2) Mixed numbers ("1 1/2 inch") — checked before generic parsing so
+        #    the whole+space+fraction pattern isn't split by ``_VALUE_RE``.
+        match = _MIXED_FRACTION_RE.match(text)
+        if match:
+            return self._normalize_mixed_fraction(match)
+
+        # 3) Generic dash ranges ("20-30 A", "1-2 m"). Dash-only, so fraction
+        #    syntax ("1/2 inch") is never misinterpreted as a range.
+        match = _RANGE_RE.match(text)
+        if match:
+            return self._normalize_range(match)
+
+        # 4) Generic "<number> <unit>" parsing (Pint-backed).
         match = _VALUE_RE.match(text)
         if not match:
             return text, None
@@ -209,6 +249,36 @@ class UnitNormalizer:
     def _normalize_cfm(self, match: re.Match[str]) -> tuple[str, str]:
         """Normalize airflow to cubic feet per minute (``800 CFM``)."""
         return _fmt(float(match.group("value"))), "CFM"
+
+    def _normalize_mixed_fraction(
+        self, match: re.Match[str],
+    ) -> tuple[str, str | None]:
+        """Parse mixed numbers (``1 1/2 inch`` -> ``1.5 in``)."""
+        frac = _parse_value(match.group("frac"))
+        if frac is None:
+            return match.group(0), None
+        magnitude = float(match.group("whole")) + frac
+        unit_token = match.group("unit").strip()
+        if not unit_token:
+            return _fmt(magnitude), None
+        canonical = self._resolve_unit(unit_token)
+        if canonical is None:
+            return match.group(0), None
+        return self._convert(canonical, magnitude)
+
+    def _normalize_range(self, match: re.Match[str]) -> tuple[str, str | None]:
+        """Normalize dash ranges (``20-30 A`` -> ``20-30 A``).
+
+        Both endpoints are converted to the canonical display unit, so e.g.
+        ``1-2 m`` becomes ``1000-2000 mm``.
+        """
+        unit_token = match.group("unit").strip()
+        canonical = self._resolve_unit(unit_token)
+        if canonical is None:
+            return match.group(0), None
+        low_value, unit = self._convert(canonical, float(match.group("lo")))
+        high_value, _ = self._convert(canonical, float(match.group("hi")))
+        return f"{low_value}-{high_value}", unit
 
     # -- helpers -----------------------------------------------------------
 

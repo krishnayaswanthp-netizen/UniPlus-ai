@@ -79,6 +79,12 @@ _MAX_BATCH_ROWS = 500
 #: Maximum number of products enriched in parallel inside a batch.
 _BATCH_CONCURRENCY = 8
 
+#: Global cap on concurrent LLM extraction calls, shared across ALL requests
+#: (single + batch, every user). ``_BATCH_CONCURRENCY`` bounds row-level work
+#: inside one upload; this bounds total Groq API concurrency server-wide so
+#: two concurrent batches can't double the load on the rate limit.
+_LLM_CONCURRENCY = asyncio.Semaphore(8)
+
 _HEADER_FONT = Font(bold=True)
 
 
@@ -135,7 +141,10 @@ async def _enrich_single_product(
 
     if file_bytes:
         try:
-            pdf_text = _pdf_parser.extract_text_and_tables(file_bytes)
+            # PyMuPDF parsing is CPU-bound; run it off the event loop.
+            pdf_text = await asyncio.to_thread(
+                _pdf_parser.extract_text_and_tables, file_bytes
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
@@ -177,14 +186,16 @@ async def _enrich_single_product(
         else _FALLBACK_SOURCE_URL
     )
     extractor = _get_extractor()
-    # The LLM call is blocking; run it off the event loop so concurrent
-    # batch items actually make progress.
-    attributes = await asyncio.to_thread(
-        extractor.extract_product_specs,
-        combined,
-        source_url,
-        request.category,
-    )
+    # The LLM call is blocking; run it off the event loop so concurrent batch
+    # items actually make progress, gated by the global semaphore so total LLM
+    # concurrency stays bounded across all requests.
+    async with _LLM_CONCURRENCY:
+        attributes = await asyncio.to_thread(
+            extractor.extract_product_specs,
+            combined,
+            source_url,
+            request.category,
+        )
 
     confidence = (
         sum(attribute.confidence_score for attribute in attributes) / len(attributes)
@@ -379,7 +390,8 @@ async def enrich_batch(file: UploadFile = File(...)) -> BatchEnrichmentResponse:
     # Fail fast (HTTP 503) when extraction is unavailable, matching /single.
     _get_extractor()
 
-    rows = _read_batch_rows(file.filename or "", raw)
+    # openpyxl/csv parsing is CPU-bound; run it off the event loop.
+    rows = await asyncio.to_thread(_read_batch_rows, file.filename or "", raw)
     semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
     async def process_row(row: dict[str, str]) -> BatchItemResult:
@@ -500,6 +512,25 @@ def _build_workbook(
     return workbook
 
 
+def _render_workbook(
+    products: list[tuple[ProductEnrichmentResponse, str, str]],
+) -> io.BytesIO:
+    """Build and serialize a workbook inside a single worker thread.
+
+    ``openpyxl`` objects are not thread-safe, so building *and* saving must
+    happen in the same thread — ``asyncio.to_thread`` guarantees this by
+    running the whole function in one executor call.
+    """
+    buffer = io.BytesIO()
+    workbook = _build_workbook(products)
+    try:
+        workbook.save(buffer)
+    finally:
+        workbook.close()
+    buffer.seek(0)
+    return buffer
+
+
 @app.get("/api/v1/export/excel")
 async def export_excel(
     request: Request,
@@ -556,13 +587,8 @@ async def export_excel(
             )
         )
 
-    buffer = io.BytesIO()
-    workbook = _build_workbook(products)
-    try:
-        workbook.save(buffer)
-    finally:
-        workbook.close()
-    buffer.seek(0)
+    # openpyxl rendering is CPU-bound; build + save in one worker thread.
+    buffer = await asyncio.to_thread(_render_workbook, products)
 
     return StreamingResponse(
         buffer,

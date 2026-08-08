@@ -15,6 +15,8 @@ short-circuiting on blank input.
 
 from __future__ import annotations
 
+import random
+import time
 from typing import Iterable
 
 import instructor
@@ -31,6 +33,14 @@ FALLBACK_MODEL = "llama-3.1-8b-instant"
 
 #: Upper bound on document text sent per request (avoid token blowups).
 _MAX_INPUT_CHARS = 25_000
+
+#: HTTP statuses treated as transient (rate limits, server hiccups); retried
+#: with exponential backoff on the current model before switching to the
+#: fallback model.
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+#: Retry attempts per model before moving on to the cheaper fallback model.
+_MAX_ATTEMPTS_PER_MODEL = 3
 
 _SYSTEM_PROMPT = """\
 You are a technical specification extraction engine for industrial B2B \
@@ -149,23 +159,48 @@ class StructuredExtractor:
         self,
         messages: list[dict[str, str]],
     ) -> list[IndustrialAttribute]:
-        """Run the structured LLM call, falling back to a cheaper model."""
+        """Run the structured LLM call, falling back to a cheaper model.
+
+        Transient HTTP failures (429 rate limits, 5xx server errors) are
+        retried on the current model with exponential backoff + jitter before
+        the fallback model is tried; non-transient errors (schema validation,
+        auth, etc.) switch models immediately. Backoff sleeps are safe here
+        because the extractor always runs inside a worker thread
+        (``asyncio.to_thread`` in ``app.main``), never on the event loop.
+        """
         last_error: Exception | None = None
         for model in (self.model, self.fallback_model):
-            try:
-                result = self.client.chat.completions.create(
-                    model=model,
-                    response_model=Iterable[IndustrialAttribute],
-                    messages=messages,
-                    max_retries=2,
-                )
-                return list(result)
-            except Exception as exc:  # validation retries exhausted, API errors
-                last_error = exc
-                continue
+            for attempt in range(_MAX_ATTEMPTS_PER_MODEL):
+                try:
+                    result = self.client.chat.completions.create(
+                        model=model,
+                        response_model=Iterable[IndustrialAttribute],
+                        messages=messages,
+                        max_retries=2,
+                    )
+                    return list(result)
+                except Exception as exc:  # validation retries exhausted, API errors
+                    last_error = exc
+                    if not self._is_retryable(exc):
+                        # Not transient — move straight to the next model.
+                        break
+                    if attempt + 1 < _MAX_ATTEMPTS_PER_MODEL:
+                        # Exponential backoff with proportional jitter so
+                        # concurrent rows that hit a 429 don't retry in lockstep.
+                        time.sleep(2**attempt + random.uniform(0.0, 2**attempt))
         raise RuntimeError(
-            "Structured extraction failed on all configured models"
+            f"Structured extraction failed on all configured models: {last_error}"
         ) from last_error
+
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """Return ``True`` when *exc* is a transient HTTP failure worth retrying."""
+        status = getattr(exc, "status_code", None)
+        try:
+            status = int(status) if status is not None else None
+        except (TypeError, ValueError):
+            status = None
+        return status in _RETRYABLE_STATUS_CODES
 
     # -- post-processing ----------------------------------------------------
 
