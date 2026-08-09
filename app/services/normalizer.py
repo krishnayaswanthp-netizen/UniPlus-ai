@@ -53,6 +53,9 @@ UNIT_ALIASES: dict[str, tuple[str, ...]] = {
     "psi": ("psi", "pounds per square inch", "pound per square inch"),
     "bar": ("bar", "bars"),
     "degF": ("degf", "deg f", "degree f", "degrees f", "fahrenheit", "\u00b0f"),
+    "degC": ("degc", "deg c", "degree c", "degrees c", "celsius", "\u00b0c"),
+    "kva": ("kva", "kilovolt-ampere", "kilovolt-amperes"),
+    "percent": ("%", "percent", "pct", "percentage", "percentages"),
 }
 
 #: Canonical unit -> short symbol used in the normalized output.
@@ -75,6 +78,9 @@ UNIT_SYMBOLS: dict[str, str] = {
     "psi": "psi",
     "bar": "bar",
     "degF": "\u00b0F",
+    "degC": "\u00b0C",
+    "kva": "kVA",
+    "percent": "%",
 }
 
 #: Lengths are normalized to millimeters (metric) or inches (imperial).
@@ -94,11 +100,24 @@ _MIXED_FRACTION_RE = re.compile(
     r"^(?P<whole>\d+)\s+(?P<frac>\d+/\d+)\s*(?P<unit>.*)$"
 )
 
-#: Generic dash range, e.g. "20-30 A", "1-2 m". Dash-only by design so
-#: fraction syntax ("1/2 inch") is never misread as a range; slash ranges
-#: for voltages are already handled by ``_VOLTAGE_RE``.
+#: Generic dash range, e.g. "20-30 A", "1-2 m", "20-30 deg C". Dash-only
+#: by design so fraction syntax ("1/2 inch") is never misread as a range;
+#: slash ranges for voltages are already handled by ``_VOLTAGE_RE``.
 _RANGE_RE = re.compile(
-    r"^(?P<lo>\d+(?:\.\d+)?)\s*-\s*(?P<hi>\d+(?:\.\d+)?)\s*(?P<unit>[A-Za-z%\"'\u00b0]+)$"
+    r"^(?P<lo>\d+(?:\.\d+)?)\s*-\s*(?P<hi>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>[A-Za-z%\"'\u00b0\s]+)$"
+)
+
+#: Generic slash range, e.g. "10/16 mm", "20/30 A". Inch/foot fractions
+#: ("1/2 inch") are excluded in ``normalize_field`` so they keep flowing to
+#: the generic fraction path below; every other unit is treated as a range
+#: pair and normalized to the canonical "lo-hi" form. NOTE: this means a
+#: proper fraction with a non-inch unit (e.g. "1/2 m") is intentionally read
+#: as a 1-2 range, matching datasheet convention (cable/wire/current size
+#: pairs); ``test_slash_range_converts_both_endpoints`` pins that choice.
+_SLASH_RANGE_RE = re.compile(
+    r"^(?P<lo>\d+(?:\.\d+)?)\s*/\s*(?P<hi>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>[A-Za-z%\"'\u00b0\s]+)$"
 )
 
 #: Removes thousands separators ("1,200" -> "1200", "1,234,567" -> "1234567")
@@ -236,6 +255,17 @@ class UnitNormalizer:
         if match:
             return self._normalize_range(match)
 
+        # 3b) Generic slash ranges ("10/16 mm", "20/30 A"). Inch/foot
+        #     fractions ("1/2 inch", "3/4 in") are excluded here so they
+        #     keep flowing to the generic fraction path below.
+        match = _SLASH_RANGE_RE.match(text)
+        if match and self._resolve_unit(match.group("unit").strip()) not in (
+            "inch",
+            "foot",
+        ):
+            return self._normalize_range(match)
+
+
         # 4) Generic "<number> <unit>" parsing (Pint-backed).
         match = _VALUE_RE.match(text)
         if not match:
@@ -321,10 +351,11 @@ class UnitNormalizer:
         return self._convert(canonical, magnitude)
 
     def _normalize_range(self, match: re.Match[str]) -> tuple[str, str | None]:
-        """Normalize dash ranges (``20-30 A`` -> ``20-30 A``).
+        """Normalize dash/slash ranges (``20-30 A`` -> ``20-30 A``).
 
         Both endpoints are converted to the canonical display unit, so e.g.
-        ``1-2 m`` becomes ``1000-2000 mm``.
+        ``1-2 m`` becomes ``1000-2000 mm`` and ``10/16 mm`` becomes
+        ``10-16 mm``.
         """
         unit_token = match.group("unit").strip()
         canonical = self._resolve_unit(unit_token)

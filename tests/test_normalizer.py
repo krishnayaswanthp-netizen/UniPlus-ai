@@ -223,3 +223,85 @@ def test_area_does_not_misread_plain_length(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("10 m")
     assert value == "10000"
     assert unit == "mm"
+
+
+# ---------------------------------------------------------------------------
+# Slash ranges across all units (non-voltage)
+# ---------------------------------------------------------------------------
+
+
+def test_slash_range_across_units(normalizer: UnitNormalizer) -> None:
+    """"10/16 mm" is a size range, not a fraction — normalized lo-hi."""
+    value, unit = normalizer.normalize_field("10/16 mm")
+    assert value == "10-16"
+    assert unit == "mm"
+
+
+def test_slash_range_non_length_unit(normalizer: UnitNormalizer) -> None:
+    """Slash ranges work for non-length units too ("20/30 A")."""
+    value, unit = normalizer.normalize_field("20/30 A")
+    assert value == "20-30"
+    assert unit == "A"
+
+
+def test_slash_range_converts_both_endpoints(normalizer: UnitNormalizer) -> None:
+    """Slash-range endpoints convert like dash-range endpoints ("1/2 m")."""
+    value, unit = normalizer.normalize_field("1/2 m")
+    assert value == "1000-2000"
+    assert unit == "mm"
+
+
+def test_inch_fraction_not_misread_as_slash_range(
+    normalizer: UnitNormalizer,
+) -> None:
+    """Inch/foot fractions keep their fraction semantics ("3/4 in")."""
+    value, unit = normalizer.normalize_field("3/4 in")
+    assert value == "0.75"
+    assert unit == "in"
+
+
+# ---------------------------------------------------------------------------
+# Expanded alias registry: kVA, degC, percent
+# ---------------------------------------------------------------------------
+
+
+def test_kva_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("120 kVA")
+    assert value == "120"
+    assert unit == "kVA"
+
+
+def test_kva_range(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("50-100 kVA")
+    assert value == "50-100"
+    assert unit == "kVA"
+
+
+def test_degc_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("25 deg C")
+    assert value == "25"
+    assert unit == "°C"
+
+
+def test_degc_symbol_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("25 °C")
+    assert value == "25"
+    assert unit == "°C"
+
+
+def test_degc_range(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("20-30 deg C")
+    assert value == "20-30"
+    assert unit == "°C"
+
+
+def test_percent_alias(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("40%")
+    assert value == "40"
+    assert unit == "%"
+
+
+def test_percent_range(normalizer: UnitNormalizer) -> None:
+    value, unit = normalizer.normalize_field("20-30 %")
+    assert value == "20-30"
+    assert unit == "%"

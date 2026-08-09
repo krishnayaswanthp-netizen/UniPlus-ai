@@ -15,9 +15,12 @@ short-circuiting on blank input.
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from typing import Iterable
+
+logger = logging.getLogger(__name__)
 
 import instructor
 from groq import Groq
@@ -107,6 +110,10 @@ class StructuredExtractor:
         (or ``local://mock-fallback`` when it is blank), a clamped
         ``confidence_score`` in ``[0.0, 1.0]``, and a ``normalized_value``/
         ``unit`` pair computed by ``UnitNormalizer`` from ``raw_value``.
+
+        When the model returns valid output but zero attributes (non-blank
+        input), a warning is logged so empty extractions are never silently
+        reported as successful.
         """
         text = self._prepare_text(raw_text)
         if not text:
@@ -118,6 +125,17 @@ class StructuredExtractor:
         stamped_url = source_url or "local://mock-fallback"
         messages = self._build_messages(text, stamped_url, category)
         attributes = self._request_attributes(messages)
+        if not attributes:
+            # The model returned valid output but zero attributes — surface
+            # this instead of reporting a silent "success" with nothing in
+            # it, so operators can spot uninformative documents / model
+            # misfires. Blank-input short-circuits above never reach here.
+            logger.warning(
+                "Empty extraction for source_url=%r (category=%r): "
+                "the model returned no attributes",
+                stamped_url,
+                category,
+            )
         return self._postprocess(attributes, stamped_url)
 
     # -- text preparation --------------------------------------------------
@@ -145,6 +163,17 @@ class StructuredExtractor:
         source_url: str,
         category: str,
     ) -> list[dict[str, str]]:
+        if len(raw_text) > _MAX_INPUT_CHARS:
+            # Documents longer than the token guard are truncated before the
+            # LLM call; make that loss visible in the logs rather than
+            # silently dropping the tail of the document.
+            logger.warning(
+                "Truncating input text for %r: %d chars exceeds the %d-char "
+                "limit; the tail of the document will be dropped.",
+                source_url,
+                len(raw_text),
+                _MAX_INPUT_CHARS,
+            )
         user_prompt = (
             f"Category: {category}\n"
             f"Source URL: {source_url}\n\n"
