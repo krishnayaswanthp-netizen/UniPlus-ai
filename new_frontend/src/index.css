@@ -61,6 +61,10 @@
   --error-container: 254 226 226; /* #FEE2E2 */
   --on-error-container: 127 29 29; /* #7F1D1D */
 
+  /* Warning (pre-flight validation banner) */
+  --warning: 202 138 4; /* #CA8A04 — amber-600 */
+  --on-warning-container: 66 32 6; /* #422006 — dark amber */
+
   /* Elevation & scrollbars */
   --shadow-tactile: 0 8px 30px -12px rgba(51, 65, 85, 0.16);
   --shadow-tactile-lg: 0 20px 50px -15px rgba(51, 65, 85, 0.2);
@@ -115,6 +119,10 @@
   --on-error: 105 0 5; /* #690005 */
   --error-container: 147 0 10; /* #93000A */
   --on-error-container: 255 218 214; /* #FFDAD6 */
+
+  /* Warning (pre-flight validation banner) */
+  --warning: 252 211 77; /* #FCD34D — amber-300 */
+  --on-warning-container: 255 236 179; /* #FFECB3 — light amber on dark surfaces */
 
   /* Elevation & scrollbars */
   --shadow-tactile: 0 20px 40px -10px rgba(0, 0, 0, 0.5);

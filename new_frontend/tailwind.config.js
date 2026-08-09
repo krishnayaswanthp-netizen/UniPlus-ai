@@ -55,6 +55,8 @@ export default {
         'on-error': 'rgb(var(--on-error) / <alpha-value>)',
         'error-container': 'rgb(var(--error-container) / <alpha-value>)',
         'on-error-container': 'rgb(var(--on-error-container) / <alpha-value>)',
+        warning: 'rgb(var(--warning) / <alpha-value>)',
+        'on-warning-container': 'rgb(var(--on-warning-container) / <alpha-value>)',
       },
       fontFamily: {
         display: ['"EB Garamond"', 'Georgia', 'serif'],

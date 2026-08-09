@@ -9,7 +9,105 @@ import StatusPill from '../components/StatusPill';
 import { formatDuration, formatFileSize, formatPercent } from '../utils/format';
 
 const ACCEPTED = ['.csv', '.xlsx'];
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB client-side cap
 const MAX_BATCH_ROWS = 500;
+
+//: Identifier columns the backend can enrich from. Normalized form:
+//: lowercase, whitespace/underscore/hyphen removed ("Part Number" ->
+//: "partnumber"). At least one must be present in the header row.
+const REQUIRED_IDENTIFIER_COLUMNS = [
+  'partnumber',
+  'part',
+  'sku',
+  'manufacturer',
+  'manufacturername',
+  'category',
+];
+
+function normalizeHeader(value) {
+  return String(value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[\s_\-]+/g, '');
+}
+
+/** Split one CSV line into fields, honoring double-quoted cells. */
+function parseCsvLine(line) {
+  const fields = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      fields.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  fields.push(current);
+  return fields;
+}
+
+/**
+ * Client-side pre-flight inspection of an upload.
+ *
+ * CSV files get full schema/header + data-row validation; Excel files cannot
+ * be inspected without a heavier client-side parser, so only the empty-file
+ * guard applies there (the backend validates their contents).
+ *
+ * Returns { ok, error?, headers?, dataRowCount? }.
+ */
+async function inspectBatchFile(file) {
+  const ext = (file.name.toLowerCase().match(/\.[a-z0-9]+$/) || [''])[0];
+
+  if (ext === '.csv') {
+    const text = (await file.text()).replace(/^\uFEFF/, '');
+    const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '');
+    if (!lines.length) {
+      return { ok: false, error: 'The file is empty — no header row or data found.' };
+    }
+    const headers = parseCsvLine(lines[0]).map((cell) => cell.trim());
+    const dataRowCount = lines
+      .slice(1)
+      .filter((line) => parseCsvLine(line).some((cell) => cell.trim() !== '')).length;
+
+    if (dataRowCount === 0) {
+      return { ok: false, error: 'The file has a header row but no data rows to enrich.' };
+    }
+    const hasIdentifier = headers.some((header) =>
+      REQUIRED_IDENTIFIER_COLUMNS.includes(normalizeHeader(header))
+    );
+    if (!hasIdentifier) {
+      return {
+        ok: false,
+        error:
+          'Missing required identifier columns. Expected at least one of: ' +
+          'part_number, part, sku, manufacturer, manufacturer_name, or category.',
+        headers,
+      };
+    }
+    return { ok: true, headers, dataRowCount };
+  }
+
+  if (file.size === 0) {
+    return { ok: false, error: 'The file is empty — it contains no data.' };
+  }
+  return { ok: true, dataRowCount: null };
+}
 
 function averageConfidence(result) {
   const successes = (result?.results || []).filter((r) => r.status === 'success');
@@ -89,19 +187,46 @@ export default function BatchCatalogPage() {
 
   const [file, setFile] = useState(null);
   const [fileError, setFileError] = useState('');
+  const [schemaWarning, setSchemaWarning] = useState('');
   const [dragging, setDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [status, setStatus] = useState('idle'); // idle | uploading | processing | done
   const [apiError, setApiError] = useState('');
   const [result, setResult] = useState(null);
+  const [totalItems, setTotalItems] = useState(null);
+  const [completedItems, setCompletedItems] = useState(0);
   const [expanded, setExpanded] = useState(new Set());
   const fileInputRef = useRef(null);
+
+  const clearErrors = () => {
+    setFileError('');
+    setSchemaWarning('');
+    setApiError('');
+  };
+
+  const resetInputValue = () => {
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const acceptFile = (candidate) => {
+    setFile(candidate);
+    setResult(null);
+    setExpanded(new Set());
+    setTotalItems(null);
+    setCompletedItems(0);
+    clearErrors();
+  };
 
   const validFile = (candidate) => {
     if (!candidate) return false;
     const ext = candidate.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0];
     if (!ext || !ACCEPTED.includes(ext)) {
       setFileError('Batch file must be a .csv or .xlsx spreadsheet.');
+      return false;
+    }
+    if (candidate.size > MAX_FILE_SIZE_BYTES) {
+      setFileError('');
+      notify('File size exceeds 25 MB limit.', 'error');
       return false;
     }
     setFileError('');
@@ -111,11 +236,11 @@ export default function BatchCatalogPage() {
   const handleDrop = (e) => {
     e.preventDefault();
     setDragging(false);
+    if (busy) return; // don't swap the file under an in-flight upload
     const dropped = e.dataTransfer?.files?.[0];
     if (dropped && validFile(dropped)) {
-      setFile(dropped);
-      setResult(null);
-      setExpanded(new Set());
+      acceptFile(dropped);
+      resetInputValue();
     }
   };
 
@@ -124,11 +249,55 @@ export default function BatchCatalogPage() {
       notify('Select a CSV or Excel catalog first.', 'error');
       return;
     }
+    clearErrors();
+
+    const target = file;
+
+    // Pre-flight: extension + size are already checked on selection, but
+    // re-check defensively before spending an upload on a bad file.
+    const ext = (target.name.toLowerCase().match(/\.[a-z0-9]+$/) || [''])[0];
+    if (!ext || !ACCEPTED.includes(ext)) {
+      setFileError('Batch file must be a .csv or .xlsx spreadsheet.');
+      return;
+    }
+    if (target.size > MAX_FILE_SIZE_BYTES) {
+      notify('File size exceeds 25 MB limit.', 'error');
+      return;
+    }
+
+    // Mark the UI busy BEFORE the async inspection so the user cannot swap
+    // or clear the file while it is being read.
+    setTotalItems(null);
+    setCompletedItems(0);
     setStatus('uploading');
     setUploadProgress(0);
-    setApiError('');
+
+    // Schema/header + empty-file guard (full inspection for CSV).
+    let inspection;
     try {
-      const response = await enrichBatch(file, {
+      inspection = await inspectBatchFile(target);
+    } catch {
+      setSchemaWarning('Could not read the file — it may be corrupted or unsupported.');
+      setStatus('idle');
+      return;
+    }
+    if (!inspection.ok) {
+      setSchemaWarning(inspection.error);
+      setStatus('idle');
+      return;
+    }
+    if (inspection.dataRowCount !== null && inspection.dataRowCount > MAX_BATCH_ROWS) {
+      setSchemaWarning(
+        `This catalog has ${inspection.dataRowCount.toLocaleString()} data rows, ` +
+          `which exceeds the ${MAX_BATCH_ROWS.toLocaleString()}-row processing limit.`
+      );
+      setStatus('idle');
+      return;
+    }
+
+    setTotalItems(inspection.dataRowCount);
+    try {
+      const response = await enrichBatch(target, {
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
             setUploadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
@@ -137,6 +306,7 @@ export default function BatchCatalogPage() {
       });
       setResult(response);
       setBatchResult(response);
+      setCompletedItems(response.total);
       setStatus('done');
       notify(
         `Batch complete — ${response.succeeded} enriched, ${response.failed} failed.`,
@@ -210,19 +380,22 @@ export default function BatchCatalogPage() {
                     <span className="font-medium text-tertiary-fixed">{result.succeeded}</span> of{' '}
                     {result.total} rows enriched. Review the queue below or start a new upload.
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFile(null);
-                      setFileError('');
-                      setResult(null);
-                      setStatus('idle');
-                    }}
-                    className="btn-ghost mt-8"
-                  >
-                    <Icon name="upload_file" size={18} />
-                    New Upload
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFile(null);
+                        setResult(null);
+                        setStatus('idle');
+                        setTotalItems(null);
+                        setCompletedItems(0);
+                        clearErrors();
+                        resetInputValue();
+                      }}
+                      className="btn-ghost mt-8"
+                    >
+                      <Icon name="upload_file" size={18} />
+                      New Upload
+                    </button>
                 </div>
               ) : busy ? (
                 <div className="z-10 w-full max-w-md text-center">
@@ -244,11 +417,35 @@ export default function BatchCatalogPage() {
                       />
                     </div>
                   ) : (
-                    <div className="mt-6 flex items-center justify-center gap-3">
-                      <span className="h-2 w-2 animate-pulse-soft rounded-full bg-tertiary-fixed" />
-                      <span className="font-sans text-body-md text-tertiary-fixed">
-                        The engine is processing rows concurrently — this may take a minute.
-                      </span>
+                    <div className="mt-6 w-full">
+                      {totalItems != null ? (
+                        <>
+                          <div className="flex items-center justify-between font-mono text-label-sm text-on-surface-variant">
+                            <span>
+                              {completedItems.toLocaleString()} /{' '}
+                              {totalItems.toLocaleString()} items completed
+                            </span>
+                            <span>
+                              {Math.round((completedItems / totalItems) * 100)}%
+                            </span>
+                          </div>
+                          <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-surface-container">
+                            <div
+                              className="h-full bg-tertiary-fixed transition-all duration-300"
+                              style={{
+                                width: `${(completedItems / totalItems) * 100}%`,
+                              }}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-center justify-center gap-3">
+                          <span className="h-2 w-2 animate-pulse-soft rounded-full bg-tertiary-fixed" />
+                          <span className="font-sans text-body-md text-tertiary-fixed">
+                            The engine is processing rows concurrently — this may take a minute.
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                   <p className="mt-4 font-mono text-label-sm text-on-surface-variant">
@@ -286,7 +483,10 @@ export default function BatchCatalogPage() {
                         onClick={(e) => {
                           e.stopPropagation();
                           setFile(null);
-                          setFileError('');
+                          setTotalItems(null);
+                          setCompletedItems(0);
+                          clearErrors();
+                          resetInputValue();
                         }}
                         className="btn-ghost"
                       >
@@ -313,6 +513,7 @@ export default function BatchCatalogPage() {
                     <code className="font-mono text-tertiary-fixed-dim">Part_Number</code>,{' '}
                     <code className="font-mono text-tertiary-fixed-dim">Category</code>
                     <span className="mx-2 text-outline">·</span>up to {MAX_BATCH_ROWS.toLocaleString()} rows
+                    <span className="mx-2 text-outline">·</span>max 25 MB
                   </p>
                 </div>
               )}
@@ -322,6 +523,19 @@ export default function BatchCatalogPage() {
               <p className="mt-3 flex items-center gap-2 font-sans text-label-sm text-error">
                 <Icon name="error" size={16} /> {fileError}
               </p>
+            )}
+            {schemaWarning && (
+              <div className="mt-6 flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4">
+                <Icon name="warning" size={20} fill className="mt-0.5 shrink-0 text-warning" />
+                <div>
+                  <p className="font-sans text-body-md font-medium text-on-warning-container">
+                    File validation failed
+                  </p>
+                  <p className="mt-1 font-sans text-body-md text-on-warning-container/80">
+                    {schemaWarning}
+                  </p>
+                </div>
+              </div>
             )}
             {apiError && (
               <div className="mt-6 flex items-start gap-3 rounded-lg border border-error/25 bg-error/5 p-4">
@@ -343,12 +557,10 @@ export default function BatchCatalogPage() {
               onChange={(e) => {
                 const picked = e.target.files?.[0];
                 if (picked && validFile(picked)) {
-                  setFile(picked);
-                  setResult(null);
-                  setExpanded(new Set());
+                  acceptFile(picked);
                 }
                 // Reset the input so re-selecting the same file fires onChange again.
-                e.target.value = '';
+                resetInputValue();
               }}
             />
           </div>
