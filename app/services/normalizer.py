@@ -2,9 +2,24 @@
 
 ``UnitNormalizer`` turns free-form spec values taken from product documents
 (e.g. ``"10mm"``, ``"1/2 inch"``, ``"120 VAC"``, ``"800 CFM"``,
-``"5.4 sq in"``) into a deterministic ``(normalized_value, unit)`` pair so
-downstream consumers (enrichment, comparison, search) can rely on
-consistent units.
+``"5.4 sq in"``, ``"1075 RPM"``) into a deterministic ``(normalized_value,
+unit)`` pair so downstream consumers (enrichment, comparison, search) can
+rely on consistent units.
+
+Parsing is grammar-first: a single structural regex splits ANY leading
+numeric expression — integers, decimals, proper fractions (``1/3``, ``3/4``),
+mixed numbers (``1 1/2``) and dash / word / slash ranges (``20-30``,
+``37 to 102``, ``10/16``) — from its trailing text suffix. Fractions convert
+to a standard numeric string (``1/3`` -> ``0.333``) while ranges normalize
+to the hyphenated ``lo-hi`` form (``20 to 25`` -> ``20-25``).
+
+The suffix is resolved against a canonical unit registry (Pint-backed
+conversions for lengths, exact aliases, and fuzzy typo-tolerant matching).
+When it cannot be resolved the split is NOT discarded: a universal fallback
+reports the cleaned suffix as the unit (``"1075 RPM"`` -> ``("1075", "RPM")``,
+``"1/3 HP"`` -> ``("0.333", "HP")``). Noise qualifiers (``NPT``, ``NPTF``,
+``BSP``, ``DIN``, ``mount``) are stripped before resolution so ``"3/4 in NPT"``
+normalizes cleanly to ``"0.75 in"``.
 """
 
 from __future__ import annotations
@@ -79,6 +94,7 @@ UNIT_SYMBOLS: dict[str, str] = {
     "bar": "bar",
     "degF": "\u00b0F",
     "degC": "\u00b0C",
+    "degree": "deg",
     "kva": "kVA",
     "percent": "%",
 }
@@ -90,35 +106,70 @@ _IMPERIAL_LENGTH_UNITS = frozenset({"inch", "foot"})
 #: One ton of refrigeration == 12,000 BTU/hour (HVAC standard).
 _BTUS_PER_TON = 12_000.0
 
-#: Matches a leading value: decimal, fraction, or plain integer.
-_VALUE_RE = re.compile(
-    r"^(?P<value>[+-]?(?:\d+\.\d*|\.\d+|\d+/\d+|\d+))\s*(?P<unit>.*)$"
+#: Substrings in ``field_name`` that mark a spec as spatial/rotational, where
+#: a bare "deg"/"degree(s)" means angular degrees — not degrees Fahrenheit.
+_ANGULAR_FIELD_TERMS = ("rotation", "angle", "stroke", "position")
+
+#: Bare degree tokens that resolve to angular degrees on angular fields.
+_ANGULAR_DEGREE_TOKENS = frozenset({"deg", "degree", "degrees"})
+
+#: Noise qualifiers stripped from unit suffixes before canonical resolution
+#: (thread forms, mounting/standard markers): ``"3/4 in NPT"`` -> ``"in"``.
+_NOISE_QUALIFIERS = frozenset({"npt", "nptf", "bsp", "din", "mount"})
+
+#: Gate for the universal fallback: an unrecognized suffix is only reported
+#: as the unit when it *looks* like a real unit token (letters/symbols, no
+#: digits or conditional punctuation). This keeps trailing conditional
+#: phrases ("800 CFM @ 0.5 in. wc") and European decimal commas ("1,5 mm")
+#: from being misinterpreted as value+unit splits.
+_PLAUSIBLE_UNIT_RE = re.compile(
+    r"^[A-Za-z%°'\"\u00b5\u03bc][A-Za-z%°'\"\u00b5\u03bc\u00b3\u00b2/.\-\s]*$"
 )
 
-#: Mixed number, e.g. "1 1/2 inch" (whole + space + fraction).
-_MIXED_FRACTION_RE = re.compile(
-    r"^(?P<whole>\d+)\s+(?P<frac>\d+/\d+)\s*(?P<unit>.*)$"
+#: UNIVERSAL STRUCTURAL GRAMMAR. Splits ANY leading numeric expression from
+#: its trailing text suffix:
+#:   * integers / decimals      "1075 RPM", "5.4 sq in"
+#:   * proper fractions         "1/3 HP", "1/2 inch"
+#:   * mixed numbers            "1 1/2 inch"
+#:   * dash ranges              "20-30 A", "-40-185 deg F"
+#:   * word ranges              "37 to 102 deg F"
+#:   * slash ranges             "10/16 mm", "120/240 V"
+#: The value group is intentionally one structural capture: every numeric
+#: form is separated from the suffix in a single pass, then re-disambiguated
+#: by :meth:`UnitNormalizer._parse_value_expression`.
+_STRUCTURAL_RE = re.compile(
+    r"^(?P<value>"
+    r"[+-]?(?:\d+/\d+|\d+\.\d*|\.\d+|\d+)"      # leading scalar / decimal / fraction
+    r"(?:\s+\d+/\d+)?"                           # mixed-number tail ("1 1/2")
+    r"(?:\s*[-/]\s*[+-]?\d+(?:\.\d+)?|"          # dash/slash range tail
+    r"\s+to\s+[+-]?\d+(?:\.\d+)?)?"              # word range tail
+    r")\s*(?P<unit>.*)$",
+    re.IGNORECASE,
 )
 
-#: Generic dash range, e.g. "20-30 A", "1-2 m", "20-30 deg C". Dash-only
-#: by design so fraction syntax ("1/2 inch") is never misread as a range;
-#: slash ranges for voltages are already handled by ``_VOLTAGE_RE``.
-_RANGE_RE = re.compile(
-    r"^(?P<lo>\d+(?:\.\d+)?)\s*-\s*(?P<hi>\d+(?:\.\d+)?)\s*"
-    r"(?P<unit>[A-Za-z%\"'\u00b0\s]+)$"
+#: Mixed number value token, e.g. "1 1/2" (whole + space + fraction).
+_MIXED_NUMBER_RE = re.compile(r"^(?P<whole>\d+)\s+(?P<frac>\d+/\d+)$")
+
+#: Word-form range value token, e.g. "37 to 102", "-40 to 185".
+_WORD_RANGE_RE = re.compile(
+    r"^(?P<lo>[+-]?\d+(?:\.\d+)?)\s+to\s+(?P<hi>[+-]?\d+(?:\.\d+)?)$",
+    re.IGNORECASE,
 )
 
-#: Generic slash range, e.g. "10/16 mm", "20/30 A". Inch/foot fractions
-#: ("1/2 inch") are excluded in ``normalize_field`` so they keep flowing to
-#: the generic fraction path below; every other unit is treated as a range
-#: pair and normalized to the canonical "lo-hi" form. NOTE: this means a
-#: proper fraction with a non-inch unit (e.g. "1/2 m") is intentionally read
-#: as a 1-2 range, matching datasheet convention (cable/wire/current size
-#: pairs); ``test_slash_range_converts_both_endpoints`` pins that choice.
-_SLASH_RANGE_RE = re.compile(
-    r"^(?P<lo>\d+(?:\.\d+)?)\s*/\s*(?P<hi>\d+(?:\.\d+)?)\s*"
-    r"(?P<unit>[A-Za-z%\"'\u00b0\s]+)$"
+#: Dash-form range value token, e.g. "20-30", "-40-185".
+_DASH_RANGE_RE = re.compile(
+    r"^(?P<lo>[+-]?\d+(?:\.\d+)?)\s*-\s*(?P<hi>[+-]?\d+(?:\.\d+)?)$"
 )
+
+#: Slash-pair value token, e.g. "1/3", "-1/3", "10/16", "120/240". Read as
+#: either a proper fraction (inch/foot units or unrecognized units) or a lo-hi
+#: size pair range (recognized non-length units — datasheet convention).
+_SLASH_PAIR_RE = re.compile(
+    r"^(?P<lo>[+-]?\d+(?:\.\d+)?)/(?P<hi>\d+(?:\.\d+)?)$"
+)
+
+#: Plain scalar value token, e.g. "1075", "5.4", ".5", "-40".
+_SCALAR_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 
 #: Removes thousands separators ("1,200" -> "1200", "1,234,567" -> "1234567")
 #: while leaving genuine decimal commas alone ("1,5 mm" stays "1,5 mm").
@@ -135,9 +186,12 @@ _THREAD_RE = re.compile(
 _TONNAGE_RE = re.compile(r"^(?P<value>\d+(?:\.\d+)?)\s*tons?\b", re.IGNORECASE)
 
 #: Voltage spec including ranges, e.g. "120 V", "24 VDC", "120/240 V".
+#: The suffix is followed by a negative lookahead so compound units like
+#: "VAC/DC" are NOT truncated to just "V" — they fall through to the generic
+#: structural grammar and are preserved verbatim as the unit.
 _VOLTAGE_RE = re.compile(
     r"^(?P<v1>\d+(?:\.\d+)?)(?P<sep>\s*/\s*|\s*-\s*)?"
-    r"(?P<v2>\d+(?:\.\d+)?)?\s*(?P<suffix>VAC|VDC|V)\b",
+    r"(?P<v2>\d+(?:\.\d+)?)?\s*(?P<suffix>VAC|VDC|V)\b(?![A-Za-z/])",
     re.IGNORECASE,
 )
 
@@ -152,7 +206,7 @@ _CFM_RE = re.compile(
 #: Area expressions, e.g. "5.4 sq in", "12 sq ft", "10 sq m",
 #: "2.5 square feet". Anchored to the full string so plain lengths like
 #: "10 m" are never misread as areas — they keep flowing to the generic
-#: length path and convert to millimeters. The ``square_*`` entries in
+#: structural path and convert to millimeters. The ``square_*`` entries in
 #: ``UNIT_ALIASES`` make this rule a fast explicit path for the same
 #: strings the generic parser would resolve — keep both in sync.
 _AREA_RE = re.compile(
@@ -188,22 +242,55 @@ def _fmt(magnitude: float) -> str:
     return f"{rounded:.4f}".rstrip("0").rstrip(".")
 
 
+def _fmt_fraction(magnitude: float) -> str:
+    """Format a fraction magnitude to its standard numeric form.
+
+    Terminating fractions keep their exact short form (``1/16`` ->
+    ``"0.0625"``, ``7/16`` -> ``"0.4375"``); repeating fractions round to
+    three decimal places (``1/3`` -> ``"0.333"``, ``1/6`` -> ``"0.167"``).
+    """
+    if abs(magnitude - round(magnitude, 4)) < 1e-9:
+        return _fmt(magnitude)
+    rounded = round(magnitude, 3)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return f"{rounded:.3f}".rstrip("0").rstrip(".")
+
+
 class UnitNormalizer:
     """Deterministic normalization of product spec values.
 
     Parses dimension/value strings such as ``"10mm"``, ``"1/2 inch"``,
-    ``"120 VAC"`` or ``"800 CFM"`` and returns a canonical
+    ``"120 VAC"``, ``"800 CFM"`` or ``"1075 RPM"`` and returns a canonical
     ``(normalized_value, unit)`` pair.  Lengths are expressed in millimeters
     (metric input) or inches (imperial input); electrical and airflow values
     keep their natural magnitude with a canonical unit symbol.  Compound
     HVAC/Electrical specs (threads, tonnage, voltage ranges, airflow CFM)
-    and area expressions are handled by dedicated regex fallback rules.
+    and area expressions are handled by dedicated regex fallback rules; all
+    other inputs go through the universal structural grammar.
     """
 
     # -- public API --------------------------------------------------------
 
-    def normalize_field(self, raw_value: str) -> tuple[str, str | None]:
+    def normalize_field(
+        self, raw_value: str, field_name: str | None = None
+    ) -> tuple[str, str | None]:
         """Normalize *raw_value* into a ``(normalized_value, unit)`` tuple.
+
+        *field_name* is optional attribute context: when it marks a
+        spatial/rotational attribute (``rotation``, ``angle``, ``stroke``,
+        ``position``), a bare ``deg``/``degree(s)`` unit is preserved as
+        angular degrees instead of being fuzzy-matched to degrees Fahrenheit.
+
+        Grammar-first: a single structural regex splits any leading numeric
+        expression — decimals, fractions (``1/3``), mixed numbers
+        (``1 1/2``) and dash / word / slash ranges (``20-30``, ``37 to 102``,
+        ``10/16``) — from its trailing text suffix. Fractions become standard
+        numeric strings (``1/3`` -> ``0.333``); ranges become hyphenated
+        ``lo-hi`` strings (``20 to 25`` -> ``20-25``). When the suffix cannot
+        be resolved to a canonical unit, the universal fallback keeps the
+        split and reports the cleaned suffix as the unit (``"1075 RPM"`` ->
+        ``("1075", "RPM")``) instead of discarding it.
 
         Returns ``(raw_value, None)`` unchanged when the value cannot be
         parsed, so callers can safely fall back to the original text.
@@ -211,6 +298,9 @@ class UnitNormalizer:
         text = raw_value.strip()
         if not text:
             return text, None
+
+        # Field-name context for angular-degree resolution ("rotation: 90 deg").
+        angular = self._is_angular_field(field_name)
 
         # Pre-normalize: Unicode minus (datasheets often use U+2212 instead of
         # ASCII '-') and thousands separators ("1,200" -> "1200"; European
@@ -243,47 +333,72 @@ class UnitNormalizer:
             if normalized is not None:
                 return normalized
 
-        # 2) Mixed numbers ("1 1/2 inch") — checked before generic parsing so
-        #    the whole+space+fraction pattern isn't split by ``_VALUE_RE``.
-        match = _MIXED_FRACTION_RE.match(text)
-        if match:
-            return self._normalize_mixed_fraction(match)
-
-        # 3) Generic dash ranges ("20-30 A", "1-2 m"). Dash-only, so fraction
-        #    syntax ("1/2 inch") is never misinterpreted as a range.
-        match = _RANGE_RE.match(text)
-        if match:
-            return self._normalize_range(match)
-
-        # 3b) Generic slash ranges ("10/16 mm", "20/30 A"). Inch/foot
-        #     fractions ("1/2 inch", "3/4 in") are excluded here so they
-        #     keep flowing to the generic fraction path below.
-        match = _SLASH_RANGE_RE.match(text)
-        if match and self._resolve_unit(match.group("unit").strip()) not in (
-            "inch",
-            "foot",
-        ):
-            return self._normalize_range(match)
-
-
-        # 4) Generic "<number> <unit>" parsing (Pint-backed).
-        match = _VALUE_RE.match(text)
+        # 2) Universal structural grammar: split the leading numeric
+        #    expression (scalar, fraction, mixed number, range) from the
+        #    trailing text suffix in a single pass.
+        match = _STRUCTURAL_RE.match(text)
         if not match:
             return text, None
 
-        magnitude = _parse_value(match.group("value"))
-        if magnitude is None:
-            return text, None
-
+        value_token = match.group("value")
         unit_token = match.group("unit").strip()
-        if not unit_token:
-            return _fmt(magnitude), None
 
-        canonical = self._resolve_unit(unit_token)
-        if canonical is None:
+        # Drop noise qualifiers ("3/4 in NPT" -> "in", "10 mm DIN" -> "mm")
+        # before canonical resolution; the cleaned suffix is also what the
+        # universal fallback reports as the unit.
+        cleaned_unit = self._strip_noise_qualifiers(unit_token)
+        canonical = (
+            self._resolve_unit(cleaned_unit, angular=angular) if cleaned_unit else None
+        )
+
+        parsed = self._parse_value_expression(value_token)
+        if parsed is None:
             return text, None
 
-        return self._convert(canonical, magnitude)
+        kind = parsed["kind"]
+
+        # Ranges ("20-30", "37 to 102", "10/16") normalize to "lo-hi".
+        if kind == "range":
+            if canonical is not None:
+                return self._normalize_range_values(
+                    parsed["lo"], parsed["hi"], canonical
+                )
+            # UNIVERSAL FALLBACK — keep the split for unknown units.
+            if cleaned_unit and self._is_plausible_unit(cleaned_unit):
+                return f"{_fmt(parsed['lo'])}-{_fmt(parsed['hi'])}", cleaned_unit
+            return f"{_fmt(parsed['lo'])}-{_fmt(parsed['hi'])}", None
+
+        # Slash pairs are fractions on inch/foot units ("1/2 inch",
+        # "3/4 in NPT") and on unrecognized units ("1/3 HP"); on recognized
+        # non-length units they are lo-hi size/current pair ranges
+        # ("10/16 mm", "20/30 A" — datasheet convention).
+        if kind == "slash_pair":
+            if canonical in ("inch", "foot") or canonical is None:
+                return self._normalize_fraction_value(
+                    parsed["lo"] / parsed["hi"],
+                    canonical,
+                    cleaned_unit,
+                    text,
+                )
+            return self._normalize_range_values(parsed["lo"], parsed["hi"], canonical)
+
+        # Mixed numbers ("1 1/2 inch") always read as fractions.
+        if kind == "mixed":
+            magnitude = parsed["magnitude"]
+            if canonical is not None:
+                return self._convert_fraction(canonical, magnitude)
+            if cleaned_unit and self._is_plausible_unit(cleaned_unit):
+                return _fmt_fraction(magnitude), cleaned_unit
+            return _fmt_fraction(magnitude), None
+
+        # Plain scalars ("1075 RPM", "10mm", "5.4 sq in").
+        magnitude = parsed["magnitude"]
+        if canonical is not None:
+            return self._convert(canonical, magnitude)
+        # UNIVERSAL FALLBACK — keep the split for unknown units.
+        if cleaned_unit and self._is_plausible_unit(cleaned_unit):
+            return _fmt(magnitude), cleaned_unit
+        return text, None
 
     # -- fallback rule handlers -------------------------------------------
 
@@ -323,8 +438,8 @@ class UnitNormalizer:
         """Split area specs into value + canonical unit (``5.4 sq in``).
 
         Returns ``None`` when the unit token cannot be resolved, letting the
-        generic parse path take over (should not happen given the anchored
-        ``_AREA_RE``, but kept safe).
+        generic structural path take over (should not happen given the
+        anchored ``_AREA_RE``, but kept safe).
         """
         magnitude = _parse_value(match.group("value"))
         if magnitude is None:
@@ -334,44 +449,150 @@ class UnitNormalizer:
             return None
         return _fmt(magnitude), UNIT_SYMBOLS.get(canonical, canonical)
 
-    def _normalize_mixed_fraction(
-        self, match: re.Match[str],
-    ) -> tuple[str, str | None]:
-        """Parse mixed numbers (``1 1/2 inch`` -> ``1.5 in``)."""
-        frac = _parse_value(match.group("frac"))
-        if frac is None:
-            return match.group(0), None
-        magnitude = float(match.group("whole")) + frac
-        unit_token = match.group("unit").strip()
-        if not unit_token:
-            return _fmt(magnitude), None
-        canonical = self._resolve_unit(unit_token)
-        if canonical is None:
-            return match.group(0), None
-        return self._convert(canonical, magnitude)
+    # -- grammar routing helpers ------------------------------------------
 
-    def _normalize_range(self, match: re.Match[str]) -> tuple[str, str | None]:
-        """Normalize dash/slash ranges (``20-30 A`` -> ``20-30 A``).
+    @staticmethod
+    def _parse_value_expression(value_token: str) -> dict[str, object] | None:
+        """Classify a structural ``value`` token into a routing descriptor.
+
+        Returns a dict with a ``kind`` of ``"range"``, ``"slash_pair"``,
+        ``"mixed"`` or ``"scalar"`` plus the parsed magnitudes, or ``None``
+        when the token is not a well-formed numeric expression.
+        """
+        token = value_token.strip()
+        if not token:
+            return None
+
+        match = _MIXED_NUMBER_RE.match(token)
+        if match:
+            frac = _parse_value(match.group("frac"))
+            if frac is None:
+                return None
+            return {
+                "kind": "mixed",
+                "magnitude": float(match.group("whole")) + frac,
+            }
+
+        match = _WORD_RANGE_RE.match(token)
+        if match:
+            return {
+                "kind": "range",
+                "lo": float(match.group("lo")),
+                "hi": float(match.group("hi")),
+            }
+
+        match = _DASH_RANGE_RE.match(token)
+        if match:
+            return {
+                "kind": "range",
+                "lo": float(match.group("lo")),
+                "hi": float(match.group("hi")),
+            }
+
+        match = _SLASH_PAIR_RE.match(token)
+        if match:
+            return {
+                "kind": "slash_pair",
+                "lo": float(match.group("lo")),
+                "hi": float(match.group("hi")),
+            }
+
+        if _SCALAR_RE.match(token):
+            magnitude = _parse_value(token)
+            if magnitude is None:
+                return None
+            return {"kind": "scalar", "magnitude": magnitude}
+
+        return None
+
+    def _normalize_range_values(
+        self, lo: float, hi: float, canonical: str
+    ) -> tuple[str, str]:
+        """Normalize a lo-hi range to its canonical display form.
 
         Both endpoints are converted to the canonical display unit, so e.g.
         ``1-2 m`` becomes ``1000-2000 mm`` and ``10/16 mm`` becomes
-        ``10-16 mm``.
+        ``10-16 mm``. Negative bounds (``-40 to 185 deg F``) are preserved.
         """
-        unit_token = match.group("unit").strip()
-        canonical = self._resolve_unit(unit_token)
-        if canonical is None:
-            return match.group(0), None
-        low_value, unit = self._convert(canonical, float(match.group("lo")))
-        high_value, _ = self._convert(canonical, float(match.group("hi")))
+        low_value, unit = self._convert(canonical, lo)
+        high_value, _ = self._convert(canonical, hi)
         return f"{low_value}-{high_value}", unit
+
+    def _normalize_fraction_value(
+        self,
+        magnitude: float,
+        canonical: str | None,
+        cleaned_unit: str,
+        text: str,
+    ) -> tuple[str, str | None]:
+        """Route a proper/mixed fraction through canonical conversion or the
+        universal fallback (``1/3 HP`` -> ``("0.333", "HP")``)."""
+        if canonical is not None:
+            return self._convert_fraction(canonical, magnitude)
+        if cleaned_unit:
+            if self._is_plausible_unit(cleaned_unit):
+                return _fmt_fraction(magnitude), cleaned_unit
+            return text, None
+        # No unit suffix — the fraction still converts to its numeric form
+        # ("3/4" -> ("0.75", None)), mirroring the mixed-number path.
+        return _fmt_fraction(magnitude), None
 
     # -- helpers -----------------------------------------------------------
 
-    def _resolve_unit(self, token: str) -> str | None:
-        """Map a raw unit token to a canonical unit name (fuzzy-tolerant)."""
+    @staticmethod
+    def _is_angular_field(field_name: str | None) -> bool:
+        """Return ``True`` when *field_name* marks a spatial/rotational spec."""
+        if not field_name:
+            return False
+        lowered = field_name.lower()
+        return any(term in lowered for term in _ANGULAR_FIELD_TERMS)
+
+    @staticmethod
+    def _strip_noise_qualifiers(token: str) -> str:
+        """Remove noise qualifiers (NPT, BSP, DIN, mount…) from a unit token.
+
+        Case-preserving so the universal fallback can report the suffix as
+        written (``"1075 RPM"`` keeps ``"RPM"``). Word-boundary based, so
+        genuine units like ``"in"`` or ``"cfm"`` are never mangled.
+        """
+        kept = [word for word in token.split() if word.lower() not in _NOISE_QUALIFIERS]
+        return " ".join(kept).strip()
+
+    @staticmethod
+    def _is_plausible_unit(token: str) -> bool:
+        """Return ``True`` when *token* looks like a genuine unit suffix.
+
+        Gates the universal fallback: trailing conditional phrases
+        (``"800 CFM @ 0.5 in. wc"``) and European decimal commas
+        (``",5 mm"``) must not be reinterpreted as value+unit splits.
+        """
+        return bool(_PLAUSIBLE_UNIT_RE.match(token))
+
+    def _resolve_unit(
+        self, token: str, *, angular: bool = False
+    ) -> str | None:
+        """Map a raw unit token to a canonical unit name (fuzzy-tolerant).
+
+        Noise qualifiers (``NPT``, ``BSP``, ``DIN``, ``mount``) are stripped
+        first so ``"3/4 in NPT"`` resolves against ``"in"``. When *angular*
+        is set, a bare ``deg``/``degree(s)`` resolves to the angular
+        ``degree`` unit instead of being fuzzy-matched to ``degF``.
+        """
         token = token.strip().lower()
         if not token:
             return None
+
+        # Drop noise qualifiers before any alias/fuzzy matching.
+        token = " ".join(
+            word for word in token.split() if word not in _NOISE_QUALIFIERS
+        )
+        if not token:
+            return None
+
+        # Spatial/rotational fields keep a bare "deg"/"degree(s)" as angular
+        # degrees rather than the Fahrenheit unit fuzzy matching would pick.
+        if angular and token in _ANGULAR_DEGREE_TOKENS:
+            return "degree"
 
         # Exact alias match first (e.g. "mm", "VAC", '"').
         for canonical, aliases in UNIT_ALIASES.items():
@@ -400,3 +621,26 @@ class UnitNormalizer:
             return _fmt(quantity.to(ureg.inch).magnitude), UNIT_SYMBOLS["inch"]
 
         return _fmt(magnitude), UNIT_SYMBOLS.get(canonical, canonical)
+
+    def _convert_fraction(
+        self, canonical: str, magnitude: float
+    ) -> tuple[str, str]:
+        """Convert a fraction magnitude like :meth:`_convert` but formatted
+        with the three-decimal fraction formatter (``1/3 m`` -> ``333.333 mm``)."""
+        ureg = _UREG
+
+        if canonical in _METRIC_LENGTH_UNITS:
+            quantity = magnitude * getattr(ureg, canonical)
+            return (
+                _fmt_fraction(quantity.to(ureg.millimeter).magnitude),
+                UNIT_SYMBOLS["millimeter"],
+            )
+
+        if canonical in _IMPERIAL_LENGTH_UNITS:
+            quantity = magnitude * getattr(ureg, canonical)
+            return (
+                _fmt_fraction(quantity.to(ureg.inch).magnitude),
+                UNIT_SYMBOLS["inch"],
+            )
+
+        return _fmt_fraction(magnitude), UNIT_SYMBOLS.get(canonical, canonical)

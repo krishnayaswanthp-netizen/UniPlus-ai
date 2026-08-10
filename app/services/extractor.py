@@ -8,8 +8,7 @@ deterministically canonicalized, and the exact ``source_url`` is stamped onto
 each attribute regardless of what the model produced.
 
 The extractor treats all document text alike — scraped pages, uploaded PDFs,
-user descriptions, and the scraper's mock fallback blocks (used when
-DuckDuckGo yields zero results) — normalizing it before the LLM call and
+and user descriptions — normalizing it before the LLM call and
 short-circuiting on blank input.
 """
 
@@ -101,10 +100,10 @@ class StructuredExtractor:
     ) -> list[IndustrialAttribute]:
         """Extract structured attributes from *raw_text*.
 
-        *raw_text* may come from scraped pages, uploaded PDFs, user-provided
-        descriptions, or mock fallback text produced by the scraper when web
-        search returns nothing — all are normalized the same way before the
-        LLM call, and blank/whitespace-only input short-circuits to ``[]``.
+        *raw_text* may come from scraped pages, uploaded PDFs, or
+        user-provided descriptions — all are normalized the same way before
+        the LLM call, and blank/whitespace-only input short-circuits to
+        ``[]``.
 
         The returned attributes are guaranteed to carry *source_url* verbatim
         (or ``local://mock-fallback`` when it is blank), a clamped
@@ -142,11 +141,10 @@ class StructuredExtractor:
 
     @staticmethod
     def _prepare_text(raw_text: str | None) -> str:
-        """Normalize document text (incl. mock fallback blocks) for the LLM.
+        """Normalize document text for the LLM.
 
-        Trims each line and drops blank lines so fallback text from
-        ``get_fallback_mock_specs`` — and scraped page text — arrives at the
-        model in a clean, compact form. Returns ``""`` for ``None``/blank
+        Trims each line and drops blank lines so scraped page text arrives at
+        the model in a clean, compact form. Returns ``""`` for ``None``/blank
         input so callers short-circuit before any API call.
         """
         if not raw_text:
@@ -242,7 +240,7 @@ class StructuredExtractor:
         processed: list[IndustrialAttribute] = []
         for attribute in attributes:
             normalized_value, unit = self.normalizer.normalize_field(
-                attribute.raw_value
+                attribute.raw_value, field_name=attribute.field_name
             )
             processed.append(
                 attribute.model_copy(

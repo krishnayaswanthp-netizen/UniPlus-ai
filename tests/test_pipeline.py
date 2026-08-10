@@ -2,9 +2,9 @@
 
 Covers PDF ingestion (``PDFParser``), the web-source domain whitelist
 (``app.core.security``), scraper filtering (``WhitelistedSearchScraper``),
-mock fallback specs (``get_fallback_mock_specs``) that kick in when
-DuckDuckGo returns zero results, and the mocked Groq structured extraction
-+ normalization flow (``StructuredExtractor``).
+the mock fallback specs (``get_fallback_mock_specs``) that the scraper no
+longer auto-injects, and the mocked Groq structured extraction +
+normalization flow (``StructuredExtractor``).
 """
 
 from __future__ import annotations
@@ -219,15 +219,14 @@ def test_fallback_mock_specs_unknown_product_uses_general_block() -> None:
     assert "Product Technical Specification" in block["raw_content"]
 
 
-def test_scraper_returns_fallback_when_search_yields_nothing(
+def test_scraper_returns_empty_when_search_yields_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rate-limited/202-blocked DuckDuckGo (zero links) falls back to mock."""
+    """A rate-limited/202-blocked DuckDuckGo (zero links) yields no content —
+    the scraper must not inject fabricated starter clues."""
     scraper = WhitelistedSearchScraper()
     monkeypatch.setattr(scraper, "_search_links", lambda query: [])
-    results = scraper.search_and_scrape("Honeywell", "T6-PRO-STAT")
-    assert results
-    assert results[0]["source_url"].startswith("mock://fallback/")
+    assert scraper.search_and_scrape("Honeywell", "T6-PRO-STAT") == []
 
 
 def test_scraper_does_not_fallback_when_results_exist_but_filtered(
@@ -241,19 +240,17 @@ def test_scraper_does_not_fallback_when_results_exist_but_filtered(
     assert scraper.search_and_scrape("Honeywell", "TH6320U2008") == []
 
 
-def test_scraper_async_returns_fallback_when_search_yields_nothing(
+def test_scraper_async_returns_empty_when_search_yields_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The async variant falls back to mock exactly like the sync one."""
+    """The async variant behaves like the sync one — no mock fallback."""
     scraper = WhitelistedSearchScraper()
     monkeypatch.setattr(scraper, "_search_links", lambda query: [])
 
     async def run() -> list[dict[str, str]]:
         return await scraper.search_and_scrape_async("Honeywell", "T6-PRO-STAT")
 
-    results = asyncio.run(run())
-    assert results
-    assert results[0]["source_url"].startswith("mock://fallback/")
+    assert asyncio.run(run()) == []
 
 
 # ---------------------------------------------------------------------------

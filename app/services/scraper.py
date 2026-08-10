@@ -7,22 +7,29 @@ retail sites, accepting official manufacturer/distributor domains and direct
 PDF datasheets), then fetches the approved pages asynchronously and returns
 their raw text content for downstream LLM extraction.
 
-When DuckDuckGo itself yields zero results (rate-limiting, 202 challenges,
-or an empty result set), :func:`get_fallback_mock_specs` supplies realistic
-category-aware starter-clue text (HVAC / Plumbing / Electrical / General) so
-the enrichment pipeline still has material to extract from.
+When DuckDuckGo yields zero usable results (rate-limiting, 202 challenges,
+or an empty result set), the scraper returns an empty list — it never
+injects fabricated starter-clue content into the enrichment pipeline.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+import warnings
 
 import httpx
 from bs4 import BeautifulSoup
 
 from app.core.security import is_direct_pdf_url, is_domain_allowed
 from app.services.parser import PDFParser
+from ddgs import DDGS
+
+#: ``ddgs`` (formerly ``duckduckgo_search``) announces the package rename via
+#: a RuntimeWarning; the rename is expected, so filter it out to keep the
+#: terminal/logs from flooding.
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="ddgs")
+warnings.filterwarnings("ignore", category=RuntimeWarning, message=r"duckduckgo")
 
 #: Reasonable browser-like UA so datasheet servers don't drop the request.
 _DEFAULT_HEADERS = {
@@ -117,13 +124,12 @@ def _pick_mock_category(manufacturer: str, part_number: str) -> str:
 
 
 def get_fallback_mock_specs(manufacturer: str, part_number: str) -> list[dict[str, str]]:
-    """Return realistic starter-clue spec blocks when web search fails.
+    """Return realistic starter-clue spec blocks (TEST-ONLY utility).
 
-    DuckDuckGo frequently returns zero results under rate-limiting or 202
-    challenges. Rather than handing the LLM nothing, this fallback produces a
-    plausible, category-aware technical text block (HVAC, Plumbing,
-    Electrical, or General) built from *manufacturer* and *part_number* so
-    downstream extraction still has material to work with.
+    NOTE: the scraper deliberately NO LONGER calls this function — web-search
+    failures return an empty list instead, so fabricated attributes can never
+    reach the LLM. The function is retained purely as a test fixture helper
+    (and as an explicit source of known-good example text).
 
     Returns a list of ``{"source_url": ..., "raw_content": ...}`` dicts in
     the same shape as :meth:`WhitelistedSearchScraper.search_and_scrape`; the
@@ -173,21 +179,15 @@ class WhitelistedSearchScraper:
         """Find and scrape whitelisted pages for a product.
 
         Returns a list of ``{"source_url": url, "raw_content": text}`` dicts.
-        When DuckDuckGo returns zero results (rate-limiting, 202 challenges,
-        or an empty result set) the scraper falls back to category-aware mock
-        starter clues via :func:`get_fallback_mock_specs`; when the search
-        succeeds but every result is dropped by the domain whitelist, the
-        result is empty.
+        Empty when DuckDuckGo yields nothing usable (rate-limiting, 202
+        challenges, empty result sets) or every result is dropped by the
+        domain whitelist — no fabricated content is ever injected.
 
         Synchronous wrapper around :meth:`search_and_scrape_async`; use the
         async variant when called from inside a running event loop.
         """
-        allowed_urls, found_links = self._search_candidates(
-            manufacturer, part_number
-        )
+        allowed_urls = self._search_candidates(manufacturer, part_number)
         if not allowed_urls:
-            if not found_links:
-                return get_fallback_mock_specs(manufacturer, part_number)
             return []
         try:
             asyncio.get_running_loop()
@@ -204,30 +204,26 @@ class WhitelistedSearchScraper:
         """Async variant of :meth:`search_and_scrape` for loop-safe callers.
 
         The DuckDuckGo lookup (``_search_candidates``) is a synchronous
-        network call — ``duckduckgo_search`` has no async API — so it runs in
-        a worker thread. Running it inline would block the event loop for the
-        whole search duration on every request, serializing batch concurrency
-        and freezing every other user of the server.
+        network call — ``ddgs`` has no async API — so it runs in a worker
+        thread. Running it inline would block the event loop for the whole
+        search duration on every request, serializing batch concurrency and
+        freezing every other user of the server.
         """
-        allowed_urls, found_links = await asyncio.to_thread(
+        allowed_urls = await asyncio.to_thread(
             self._search_candidates, manufacturer, part_number
         )
         if not allowed_urls:
-            if not found_links:
-                return get_fallback_mock_specs(manufacturer, part_number)
             return []
         return await self._scrape_many(allowed_urls)
 
     def _search_candidates(
         self, manufacturer: str, part_number: str
-    ) -> tuple[list[str], bool]:
+    ) -> list[str]:
         """Search, relevance-filter, then whitelist-check candidate URLs.
 
-        Returns ``(allowed_urls, found_links)``. ``found_links`` records
-        whether the search engine returned *any* results (even if every one
-        was later dropped by relevance/whitelist filtering); callers use it
-        to distinguish 'search failed / rate-limited' from 'search succeeded
-        but nothing usable', which decides whether the mock fallback applies.
+        Returns the whitelisted URLs ready to scrape (possibly empty when the
+        search yields nothing, DuckDuckGo rate-limits the request, or every
+        result is dropped by relevance/whitelist filtering).
         """
         query = f"{manufacturer} {part_number} technical specifications"
         found_urls = self._search_links(query)
@@ -236,21 +232,17 @@ class WhitelistedSearchScraper:
             for url in found_urls
             if self._is_relevant(url, manufacturer, part_number)
         ]
-        allowed = [url for url in candidates if is_domain_allowed(url)]
-        return allowed, bool(found_urls)
+        return [url for url in candidates if is_domain_allowed(url)]
 
     # -- DuckDuckGo search --------------------------------------------------
 
     def _search_links(self, query: str) -> list[str]:
         """Run a DuckDuckGo text search and return the result URLs.
 
-        Imported lazily so tests and non-search code paths don't require the
-        dependency to be importable at module load. Any search failure (rate
-        limit, network, no results) degrades to an empty list.
+        Any search failure (rate limit, network, no results) degrades to an
+        empty list.
         """
         try:
-            from duckduckgo_search import DDGS
-
             with DDGS() as ddgs:
                 results = ddgs.text(query, max_results=self.max_results)
         except Exception:

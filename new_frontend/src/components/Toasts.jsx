@@ -1,4 +1,4 @@
-import { useWorkspace } from '../context/WorkspaceContext';
+import { useToasts } from '../context/ToastContext';
 import Icon from './Icon';
 
 const STYLES = {
@@ -20,7 +20,7 @@ const STYLES = {
 };
 
 export default function Toasts() {
-  const { toasts, dismissToast } = useWorkspace();
+  const { toasts, dismissToast } = useToasts();
 
   return (
     <div
@@ -33,7 +33,7 @@ export default function Toasts() {
           <div
             key={toast.id}
             className={`animate-fade-in flex items-start gap-3 rounded-lg border ${style.borderClass}
-              bg-surface-container-high/95 px-4 py-3 shadow-tactile backdrop-blur`}
+              bg-surface-container-high px-4 py-3 shadow-tactile`}
           >
             <Icon name={style.icon} size={20} fill className={style.iconClass} />
             <p className="flex-1 text-body-md leading-snug text-on-surface">{toast.message}</p>

@@ -5,7 +5,7 @@
 ![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-38BDF8?logo=tailwindcss&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen)
 
 **High-throughput B2B product-intelligence engine.** UniPulse AI turns raw
 industrial SKUs (a manufacturer name + part number, an uploaded PDF datasheet,
@@ -64,15 +64,25 @@ batches can't blow through the provider rate limit.
 
 ### Pint Unit Normalization
 Every extracted `raw_value` is canonicalized through `UnitNormalizer`
-(Pint + RapidFuzz):
+(Pint + RapidFuzz) using a **grammar-first structural split** — one regex
+separates any leading numeric expression (decimals, fractions, mixed
+numbers, ranges) from its unit suffix:
 
 - **Lengths** — metric → millimeters, imperial → inches (`1 m` → `1000 mm`,
   `2 ft` → `24 in`)
-- **Mixed numbers & fractions** — `1 1/2 inch` → `1.5 in`, `3/4 in` → `0.75 in`
-- **Ranges** — `20-30 A` → `20-30 A`, `1-2 m` → `1000-2000 mm`, `10/16 mm` → `10-16 mm`
+- **Fractions** — proper and mixed fractions convert to standard numeric
+  strings (`1/3 HP` → `0.333 HP`, `1 1/2 inch` → `1.5 in`, `3/4 in NPT` → `0.75 in`)
+- **Ranges** — dash, word and slash ranges normalize to the hyphenated
+  `lo-hi` form (`20 to 25` → `20-25`, `20-30 A` → `20-30 A`,
+  `1-2 m` → `1000-2000 mm`, `10/16 mm` → `10-16 mm`)
 - **Voltage / airflow** — `120 VAC` → `120 V`, `800 CFM` → `800 CFM`
 - **Areas** — `5.4 sq in`, `2.5 square feet` → `sq ft`
 - **Formatting artifacts** — `1,200 CFM` → `1200 CFM`, Unicode minus `−40` → `-40`
+- **Qualifier stripping** — thread/standard noise (NPT, NPTF, BSP, DIN,
+  mount) is removed before resolution (`3/4 in NPT` → `0.75 in`)
+- **Universal fallback** — units the registry has never seen are never
+  discarded; the numeric value keeps its cleaned suffix as the unit
+  (`1075 RPM` → `1075 RPM`, `150 lb-in`, `10 kA`, `1500 lux`, `25 cSt`)
 - **Alias registry** — PSI, bar, degF/degC, kVA, percent, thread specs
   (`1/2-14 NPT`), HVAC tonnage (`3.5 tons` → `42000 BTU/h`)
 
@@ -83,10 +93,11 @@ Enriched results are rendered into a styled two-sheet `.xlsx` workbook —
 confidence and source URL) — with bold headers, sized columns and frozen panes.
 
 ### Resilient Web Research
-DuckDuckGo search + domain-whitelist filtering with a category-aware mock
-fallback: when search is rate-limited or returns nothing, the pipeline still
-produces plausible starter-clue spec text (HVAC / Plumbing / Electrical /
-General) so extraction has material to work with.
+DuckDuckGo search + domain-whitelist filtering. When search is rate-limited
+or returns nothing, the scraper returns **no content** rather than
+fabricating starter clues — every extracted attribute traces back to a real
+scraped or uploaded source (`https://…`, `upload://…`, or
+`local://user-provided` when nothing is available).
 
 ---
 
@@ -400,8 +411,7 @@ unipluse-ai/
 │   │   ├── config.py             # pydantic-settings (.env → Settings)
 │   │   └── security.py           # domain whitelist / retail-blocklist policy
 │   ├── schemas/
-│   │   ├── enrichment.py         # request/response Pydantic models
-│   │   └── product.py            # product models (placeholder)
+│   │   └── enrichment.py         # request/response Pydantic models
 │   └── services/
 │       ├── scraper.py            # DuckDuckGo search + whitelisted scraping
 │       ├── extractor.py          # Groq + instructor structured extraction
@@ -413,13 +423,13 @@ unipluse-ai/
 │   │   ├── App.jsx               # router + app shell
 │   │   ├── pages/                # HomePage, SingleSkuPage, BatchCatalogPage
 │   │   ├── components/           # TopNav, Toasts, AttributeTable, StatCard…
-│   │   ├── context/              # ThemeContext, WorkspaceContext
+│   │   ├── context/              # ThemeContext, WorkspaceContext, ToastContext
 │   │   ├── services/api.js       # ★ axios API layer (VITE_API_BASE_URL)
 │   │   └── utils/format.js       # duration / percent / file-size formatters
 │   ├── index.html
 │   ├── vite.config.js
 │   └── tailwind.config.js        # design tokens (light + dark themes)
-├── tests/                        # 96 tests (offline — no API keys needed)
+├── tests/                        # 120 tests (offline — no API keys needed)
 │   ├── test_api.py               # endpoint behavior (fakes for scraper/LLM)
 │   ├── test_pipeline.py          # PDF, whitelist, scraper, extraction, retries
 │   ├── test_normalizer.py        # unit normalization edge cases
@@ -443,4 +453,4 @@ pytest -q
 ```
 
 The suite runs fully offline: network calls and the LLM are faked, so it passes
-without API keys or internet access. `96 passed` on a clean checkout.
+without API keys or internet access. `120 passed` on a clean checkout.

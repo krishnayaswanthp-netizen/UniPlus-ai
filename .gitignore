@@ -22,3 +22,8 @@ __pycache__/
 .idea/
 .DS_Store
 *.swp
+
+# Ignore specific markdown files
+demo_walkthrough.md
+interview_cheatsheet.md
+interview_preparation.md

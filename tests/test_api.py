@@ -100,9 +100,16 @@ def _make_pdf(text: str) -> bytes:
 
 def _csv_bytes(rows: list[list[str]]) -> bytes:
     """Serialize *rows* under the canonical batch header."""
+    return _csv_bytes_with_headers(
+        ["Manufacturer", "Part_Number", "Category"], rows
+    )
+
+
+def _csv_bytes_with_headers(headers: list[str], rows: list[list[str]]) -> bytes:
+    """Serialize *rows* under an arbitrary *headers* row."""
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["Manufacturer", "Part_Number", "Category"])
+    writer.writerow(headers)
     writer.writerows(rows)
     return buffer.getvalue().encode("utf-8")
 
@@ -247,6 +254,39 @@ def test_batch_enrich_csv(client: TestClient) -> None:
     skus = {result["sku_id"] for result in body["results"]}
     assert skus == {"Honeywell-TH6320U2008", "Trane-XV18"}
     assert all(result["status"] == "success" for result in body["results"])
+
+
+def test_batch_enrich_flexible_manufacturer_headers(client: TestClient) -> None:
+    """Lowercase/spaced header variants still yield real manufacturer SKUs
+    (no "UNKNOWN-" prefix)."""
+    content = _csv_bytes_with_headers(
+        ["manufacturer", "Part Number", "category"],
+        [["Siemens", "3RT2026-1BB40", "Electrical"]],
+    )
+    response = client.post(
+        "/api/v1/enrich/batch",
+        files={"file": ("batch.csv", content, "text/csv")},
+    )
+    assert response.status_code == 200
+    assert response.json()["results"][0]["sku_id"] == "Siemens-3RT2026-1BB40"
+
+
+def test_batch_enrich_mfr_and_brand_headers(client: TestClient) -> None:
+    """``Mfr``/``Brand`` columns map to the manufacturer field."""
+    for header in ("Mfr", "Brand"):
+        content = _csv_bytes_with_headers(
+            [header, "Part_Number", "Category"],
+            [["Schneider Electric", "LC1D09", "Electrical"]],
+        )
+        response = client.post(
+            "/api/v1/enrich/batch",
+            files={"file": ("batch.csv", content, "text/csv")},
+        )
+        assert response.status_code == 200
+        assert (
+            response.json()["results"][0]["sku_id"]
+            == "Schneider Electric-LC1D09"
+        )
 
 
 def test_batch_enrich_excel(client: TestClient) -> None:

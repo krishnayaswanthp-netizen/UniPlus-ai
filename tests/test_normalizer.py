@@ -58,6 +58,14 @@ def test_voltage_dash_range_preserves_separator(normalizer: UnitNormalizer) -> N
     assert unit == "V"
 
 
+def test_compound_vac_dc_unit_keeps_split(normalizer: UnitNormalizer) -> None:
+    """A "VAC/DC" suffix must not be silently truncated to "V" NOR dropped:
+    the universal fallback keeps the value/unit split intact."""
+    value, unit = normalizer.normalize_field("20-30 VAC/DC")
+    assert value == "20-30"
+    assert unit == "VAC/DC"
+
+
 def test_cfm_airflow(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("800 CFM")
     assert value == "800"
@@ -120,6 +128,27 @@ def test_generic_range_converts_both_endpoints(normalizer: UnitNormalizer) -> No
     assert unit == "mm"
 
 
+def test_word_range_normalizes_to_dash_form(normalizer: UnitNormalizer) -> None:
+    """Prose ranges ("37 to 102 deg F") normalize to the canonical dash form."""
+    value, unit = normalizer.normalize_field("37 to 102 deg F")
+    assert value == "37-102"
+    assert unit == "°F"
+
+
+def test_negative_word_range_normalizes(normalizer: UnitNormalizer) -> None:
+    """Negative lower bounds parse in prose ranges ("-40 to 185 deg F")."""
+    value, unit = normalizer.normalize_field("-40 to 185 deg F")
+    assert value == "-40-185"
+    assert unit == "°F"
+
+
+def test_negative_dash_range_normalizes(normalizer: UnitNormalizer) -> None:
+    """Negative lower bounds parse in dash ranges ("-40-185 deg F")."""
+    value, unit = normalizer.normalize_field("-40-185 deg F")
+    assert value == "-40-185"
+    assert unit == "°F"
+
+
 def test_thousands_separator_removed(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("1,200 CFM")
     assert value == "1200"
@@ -157,10 +186,12 @@ def test_fraction_still_parses_after_range_rule(normalizer: UnitNormalizer) -> N
     assert unit == "in"
 
 
-def test_range_with_unresolvable_unit_passthrough(normalizer: UnitNormalizer) -> None:
+def test_range_with_unresolvable_unit_keeps_split(normalizer: UnitNormalizer) -> None:
+    """The universal fallback keeps the range split even for unrecognized
+    units instead of discarding it ("20-30 XYZ" -> "20-30", "XYZ")."""
     value, unit = normalizer.normalize_field("20-30 XYZ")
-    assert value == "20-30 XYZ"
-    assert unit is None
+    assert value == "20-30"
+    assert unit == "XYZ"
 
 
 def test_european_decimal_comma_not_misread_as_thousands(
@@ -305,3 +336,147 @@ def test_percent_range(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("20-30 %")
     assert value == "20-30"
     assert unit == "%"
+
+
+# ---------------------------------------------------------------------------
+# Field-aware angular degrees ("rotation: 90 deg" must not become °F)
+# ---------------------------------------------------------------------------
+
+
+def test_angular_degree_field_preserved(normalizer: UnitNormalizer) -> None:
+    """Rotational fields keep a bare "deg" as angular degrees, not °F."""
+    value, unit = normalizer.normalize_field("90 deg", field_name="rotation_angle")
+    assert value == "90"
+    assert unit == "deg"
+
+
+def test_angular_degree_range_preserved(normalizer: UnitNormalizer) -> None:
+    """Angular ranges keep degrees too ("90-180 deg" rotation)."""
+    value, unit = normalizer.normalize_field("90-180 deg", field_name="rotation")
+    assert value == "90-180"
+    assert unit == "deg"
+
+
+def test_angular_degree_other_field_terms(normalizer: UnitNormalizer) -> None:
+    """"angle"/"stroke"/"position" fields behave like rotation fields."""
+    for field_name in ("mounting_angle", "valve_stroke", "switch_position"):
+        value, unit = normalizer.normalize_field("45 deg", field_name=field_name)
+        assert value == "45"
+        assert unit == "deg"
+
+
+def test_non_angular_deg_keeps_fahrenheit_mapping(
+    normalizer: UnitNormalizer,
+) -> None:
+    """Without a spatial field name, bare "deg" keeps its fuzzy °F mapping."""
+    value, unit = normalizer.normalize_field("90 deg")
+    assert value == "90"
+    assert unit == "°F"
+
+
+# ---------------------------------------------------------------------------
+# Generalized grammar-first normalization: fractions, ranges, novel units
+# ---------------------------------------------------------------------------
+
+
+def test_fraction_with_unknown_unit_stays_fraction(normalizer: UnitNormalizer) -> None:
+    """A proper fraction with an unrecognized unit reads as a fraction, not
+    a 1-3 range ("1/3 HP" -> "0.333 HP")."""
+    value, unit = normalizer.normalize_field("1/3 HP")
+    assert value == "0.333"
+    assert unit == "HP"
+
+
+def test_scalar_with_unknown_unit_fallback(normalizer: UnitNormalizer) -> None:
+    """Unrecognized single-token units fall back to the value/unit split
+    instead of being discarded ("1075 RPM")."""
+    value, unit = normalizer.normalize_field("1075 RPM")
+    assert value == "1075"
+    assert unit == "RPM"
+
+
+def test_inch_fraction_with_npt_qualifier(normalizer: UnitNormalizer) -> None:
+    """Noise qualifiers (NPT) are stripped during canonical resolution
+    ("3/4 in NPT" -> "0.75 in")."""
+    value, unit = normalizer.normalize_field("3/4 in NPT")
+    assert value == "0.75"
+    assert unit == "in"
+
+
+def test_compound_unknown_unit_fallback(normalizer: UnitNormalizer) -> None:
+    """Compound unknown units survive the fallback ("150 lb-in")."""
+    value, unit = normalizer.normalize_field("150 lb-in")
+    assert value == "150"
+    assert unit == "lb-in"
+
+
+def test_kiloampere_unknown_unit_fallback(normalizer: UnitNormalizer) -> None:
+    """Multiplier prefixes on unrecognized units are preserved ("10 kA")."""
+    value, unit = normalizer.normalize_field("10 kA")
+    assert value == "10"
+    assert unit == "kA"
+
+
+def test_lux_unknown_unit_fallback(normalizer: UnitNormalizer) -> None:
+    """An unseen unit (lux) passes through the value/unit split."""
+    value, unit = normalizer.normalize_field("1500 lux")
+    assert value == "1500"
+    assert unit == "lux"
+
+
+def test_centistokes_unknown_unit_fallback(normalizer: UnitNormalizer) -> None:
+    """An unseen compound unit (cSt) passes through the value/unit split."""
+    value, unit = normalizer.normalize_field("25 cSt")
+    assert value == "25"
+    assert unit == "cSt"
+
+
+def test_bare_word_range_normalizes_to_dash(normalizer: UnitNormalizer) -> None:
+    """A bare word range ("20 to 25") normalizes to the hyphenated form."""
+    value, unit = normalizer.normalize_field("20 to 25")
+    assert value == "20-25"
+    assert unit is None
+
+
+def test_bare_dash_range_normalizes(normalizer: UnitNormalizer) -> None:
+    """A bare dash range ("1-10") keeps the hyphenated form with no unit."""
+    value, unit = normalizer.normalize_field("1-10")
+    assert value == "1-10"
+    assert unit is None
+
+
+def test_din_qualifier_stripped(normalizer: UnitNormalizer) -> None:
+    """DIN is stripped like other noise qualifiers ("10 mm DIN")."""
+    value, unit = normalizer.normalize_field("10 mm DIN")
+    assert value == "10"
+    assert unit == "mm"
+
+
+def test_mount_qualifier_stripped(normalizer: UnitNormalizer) -> None:
+    """Mount is stripped from area suffixes ("5.4 sq in mount")."""
+    value, unit = normalizer.normalize_field("5.4 sq in mount")
+    assert value == "5.4"
+    assert unit == "sq in"
+
+
+def test_bare_fraction_converts_to_decimal(normalizer: UnitNormalizer) -> None:
+    """A fraction with no unit suffix still converts to its numeric form
+    ("3/4" -> "0.75")."""
+    value, unit = normalizer.normalize_field("3/4")
+    assert value == "0.75"
+    assert unit is None
+
+
+def test_terminating_fraction_preserves_precision(normalizer: UnitNormalizer) -> None:
+    """Terminating fractions keep full precision ("1/16 inch" -> "0.0625 in"
+    rather than rounding to "0.062")."""
+    value, unit = normalizer.normalize_field("1/16 inch")
+    assert value == "0.0625"
+    assert unit == "in"
+
+
+def test_negative_fraction_normalizes(normalizer: UnitNormalizer) -> None:
+    """Signed fractions normalize like positive ones ("-1/3" -> "-0.333")."""
+    value, unit = normalizer.normalize_field("-1/3")
+    assert value == "-0.333"
+    assert unit is None

@@ -27,6 +27,7 @@ import asyncio
 import csv
 import io
 import json
+import re
 import time
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -289,23 +290,42 @@ async def enrich_single(request: Request) -> ProductEnrichmentResponse:
 # ---------------------------------------------------------------------------
 
 
+#: Strips punctuation from batch header keys so alternate spellings
+#: ("Manufacturer Name", "manufacturer_name", "Mfr") match the same column.
+_HEADER_PUNCTUATION_RE = re.compile(r"[^a-z0-9]")
+
+
+def _normalize_header(key: str) -> str:
+    """Lowercase *key* and strip punctuation for header-tolerant matching."""
+    return _HEADER_PUNCTUATION_RE.sub("", str(key).strip().lower())
+
+
 def _clean_cell(row: dict[str, str], *aliases: str) -> str:
-    """Return the first non-empty cell among *aliases* (header-tolerant)."""
+    """Return the first non-empty cell among *aliases* (header-tolerant).
+
+    Header keys are compared case-insensitively with punctuation stripped, so
+    "Manufacturer", "Manufacturer_Name", "manufacturer name" and "mfr" all
+    resolve to the same column.
+    """
+    lookup = {_normalize_header(key): value for key, value in row.items()}
     for alias in aliases:
-        value = row.get(alias)
+        value = lookup.get(_normalize_header(alias))
         if value is not None and str(value).strip():
             return str(value).strip()
     return ""
 
 
 def _row_identity(row: dict[str, str]) -> tuple[str, str, str]:
-    """Return ``(manufacturer, part_number, category)`` from a batch row."""
+    """Return ``(manufacturer, part_number, category)`` from a batch row.
+
+    Manufacturer aliases are matched flexibly so any of ``manufacturer_name``,
+    ``manufacturer``, ``mfr`` or ``brand`` (in any header casing/spacing)
+    supplies the real manufacturer instead of an "UNKNOWN" fallback.
+    """
     return (
-        _clean_cell(row, "Manufacturer", "Manufacturer_Name", "manufacturer"),
-        _clean_cell(
-            row, "Part_Number", "PartNumber", "Part Number", "part_number"
-        ),
-        _clean_cell(row, "Category", "category"),
+        _clean_cell(row, "manufacturer_name", "manufacturer", "mfr", "brand"),
+        _clean_cell(row, "part_number", "part_no"),
+        _clean_cell(row, "category"),
     )
 
 

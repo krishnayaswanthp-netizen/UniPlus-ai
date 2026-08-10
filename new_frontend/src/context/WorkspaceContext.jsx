@@ -1,12 +1,6 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import { exportExcel } from '../services/api';
+import { useToasts } from './ToastContext';
 
 const WorkspaceContext = createContext(null);
 
@@ -15,26 +9,20 @@ const WorkspaceContext = createContext(null);
  *  - singleResult  — last single-SKU enrichment response
  *  - batchResult   — last batch enrichment response
  *  - exportableResults — the records the top-nav "Export Data" button writes
- *  - notify()      — push a toast message (type: "success" | "error" | "info")
+ *
+ * Toast state lives in ToastContext (see ToastContext.jsx for why): keeping
+ * it here would churn this context value every time a toast is added or
+ * auto-dismissed, re-rendering every consumer — including the attribute
+ * table trees — for no reason.
+ *
+ * NOTE: WorkspaceProvider calls ``useToasts()`` for its export notifications,
+ * so it must be rendered inside a ``<ToastProvider>`` (App.jsx does this).
  */
 export function WorkspaceProvider({ children }) {
   const [singleResult, setSingleResult] = useState(null);
   const [batchResult, setBatchResult] = useState(null);
   const [exporting, setExporting] = useState(false);
-  const [toasts, setToasts] = useState([]);
-  const toastId = useRef(0);
-
-  const notify = useCallback((message, type = 'info') => {
-    const id = ++toastId.current;
-    setToasts((prev) => [...prev, { id, message, type }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 6000);
-  }, []);
-
-  const dismissToast = useCallback((id) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const { notify } = useToasts();
 
   const exportableResults = useMemo(() => {
     if (batchResult) return batchResult.results.filter((r) => r.status === 'success');
@@ -64,20 +52,8 @@ export function WorkspaceProvider({ children }) {
       exportableResults,
       exporting,
       runExport,
-      notify,
-      toasts,
-      dismissToast,
     }),
-    [
-      singleResult,
-      batchResult,
-      exportableResults,
-      exporting,
-      runExport,
-      notify,
-      toasts,
-      dismissToast,
-    ]
+    [singleResult, batchResult, exportableResults, exporting, runExport]
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

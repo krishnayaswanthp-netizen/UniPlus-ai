@@ -23,7 +23,7 @@ export default function TopNav() {
   }, [location.pathname]);
 
   return (
-    <header className="sticky top-0 z-50 border-b border-line/15 bg-background/90 backdrop-blur">
+    <header className="sticky top-0 z-50 border-b border-line/15 bg-background/95">
       <div className="mx-auto flex h-20 w-full max-w-shell items-center justify-between px-6 md:px-container-padding">
         {/* Brand */}
         <Link to="/" className="flex items-center gap-3">

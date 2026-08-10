@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { CATEGORIES, enrichSingle } from '../services/api';
+import { useToasts } from '../context/ToastContext';
 import { useWorkspace } from '../context/WorkspaceContext';
 import AttributeTable from '../components/AttributeTable';
 import Icon from '../components/Icon';
@@ -74,7 +75,8 @@ function ResultSheet({ result, onReset }) {
 }
 
 export default function SingleSkuPage() {
-  const { setSingleResult, notify } = useWorkspace();
+  const { setSingleResult } = useWorkspace();
+  const { notify } = useToasts();
 
   const [manufacturer, setManufacturer] = useState('');
   const [partNumber, setPartNumber] = useState('');

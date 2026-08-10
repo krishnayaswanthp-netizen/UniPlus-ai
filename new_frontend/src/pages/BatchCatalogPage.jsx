@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { enrichBatch } from '../services/api';
+import { useToasts } from '../context/ToastContext';
 import { useWorkspace } from '../context/WorkspaceContext';
 import AttributeTable from '../components/AttributeTable';
 import ConfidencePill from '../components/ConfidencePill';
@@ -183,7 +184,8 @@ function BatchResultRow({ row, index, expanded, onToggle }) {
 }
 
 export default function BatchCatalogPage() {
-  const { setBatchResult, runExport, exporting, notify } = useWorkspace();
+  const { setBatchResult, runExport, exporting } = useWorkspace();
+  const { notify } = useToasts();
 
   const [file, setFile] = useState(null);
   const [fileError, setFileError] = useState('');
