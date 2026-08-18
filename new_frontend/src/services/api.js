@@ -219,7 +219,6 @@ export async function exportExcel(results) {
     throw normalizeError(err);
   }
 }
-
 /**
  * Simple liveness probe — used by the UI to surface a friendly banner when
  * the backend is unreachable.
@@ -227,8 +226,8 @@ export async function exportExcel(results) {
  */
 export async function checkBackendHealth() {
   try {
-    const { data } = await http.get('/health', { timeout: 4000 });
-    return data?.status === 'ok';
+    const res = await http.get('/health', { timeout: 10000 });
+    return res.status === 200;
   } catch {
     return false;
   }
