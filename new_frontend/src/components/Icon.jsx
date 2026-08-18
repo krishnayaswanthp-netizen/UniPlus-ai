@@ -1,8 +1,14 @@
+import { memo } from 'react';
+
 /**
  * Thin wrapper around Material Symbols Outlined (loaded via Google Fonts in
  * index.html). Pass any symbol name, e.g. <Icon name="auto_awesome" />.
+ *
+ * Memoized: this leaf renders on every attribute/status row, so skipping
+ * re-renders when its (primitive) props are unchanged keeps large tables
+ * cheap during batch status updates.
  */
-export default function Icon({ name, size = 20, fill = false, className = '' }) {
+function Icon({ name, size = 20, fill = false, className = '' }) {
   return (
     <span
       aria-hidden="true"
@@ -16,3 +22,5 @@ export default function Icon({ name, size = 20, fill = false, className = '' }) 
     </span>
   );
 }
+
+export default memo(Icon);

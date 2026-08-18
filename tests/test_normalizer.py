@@ -2,7 +2,8 @@
 
 import pytest
 
-from app.services.normalizer import UnitNormalizer
+from app.schemas.product import RowStatus
+from app.services.normalizer import InputNormalizer, UnitNormalizer
 
 
 @pytest.fixture
@@ -480,3 +481,82 @@ def test_negative_fraction_normalizes(normalizer: UnitNormalizer) -> None:
     value, unit = normalizer.normalize_field("-1/3")
     assert value == "-0.333"
     assert unit is None
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: InputNormalizer — header alias mapping & row normalization
+# ---------------------------------------------------------------------------
+
+
+def test_clean_manufacturer_name_strips_erp_codes() -> None:
+    normalizer = InputNormalizer()
+    assert normalizer.clean_manufacturer_name("3M Inc (2435)") == "3M Inc"
+    assert (
+        normalizer.clean_manufacturer_name("Mirka Abrasives (MIRUS)")
+        == "Mirka Abrasives"
+    )
+    assert normalizer.clean_manufacturer_name("Freud Inc") == "Freud Inc"
+
+
+def test_clean_placeholder_filters_unbranded_strings() -> None:
+    normalizer = InputNormalizer()
+    assert normalizer.clean_placeholder("-- Unbranded --") is None
+    assert normalizer.clean_placeholder("-- No Unilog Brand --") is None
+    assert normalizer.clean_placeholder("3M") == "3M"
+    assert normalizer.clean_placeholder("   ") is None
+
+
+def test_map_header_aliases_official_hackathon_headers() -> None:
+    normalizer = InputNormalizer()
+    raw_row = {
+        "Part_Manuf": "Freud Inc (9928)",
+        "Mfg_Part_Num": "DCB518ASTS06G",
+        "Part_Desc": "6 in x 1/8 in Cut-Off Wheel 24V",
+        "Unilog_Brand": "-- No Unilog Brand --",
+    }
+    canonical = normalizer.map_header_aliases(raw_row)
+
+    assert canonical["manufacturer"] == "Freud Inc"
+    assert canonical["mfg_part_number"] == "DCB518ASTS06G"
+    assert canonical["raw_description"] == "6 in x 1/8 in Cut-Off Wheel 24V"
+    assert canonical["category"] == "General"
+
+
+def test_normalize_row_produces_valid_product_record() -> None:
+    normalizer = InputNormalizer()
+    raw_row = {
+        "Vendor": "Omron (JPN)",
+        "SKU": "MY4N-DC24",
+        "Description": "General Purpose Relay 24VDC",
+        "Dept": "Electrical",
+    }
+
+    record = normalizer.normalize_row(
+        raw_row, row_id=1, original_index=0, file_source="catalog.csv"
+    )
+
+    assert record.identity.row_id == 1
+    assert record.identity.manufacturer == "Omron"
+    assert record.identity.mfg_part_number == "MY4N-DC24"
+    assert record.identity.sku_id == "Omron-MY4N-DC24"
+    assert record.identity.category == "Electrical"
+    assert record.status == RowStatus.ROW_READY
+
+
+def test_clean_manufacturer_name_null_and_placeholder_fallback() -> None:
+    """Null and placeholder manufacturer inputs fall back to "Unknown"."""
+    normalizer = InputNormalizer()
+    assert normalizer.clean_manufacturer_name(None) == "Unknown"
+    assert normalizer.clean_manufacturer_name("-- Unbranded --") == "Unknown"
+
+
+def test_missing_part_number_falls_back_to_unknown() -> None:
+    """A row with no part-number column yields the "UNKNOWN" fallback."""
+    normalizer = InputNormalizer()
+    canonical = normalizer.map_header_aliases(
+        {"Vendor": "3M Inc", "Description": "Stikit Tape"}
+    )
+    assert canonical["manufacturer"] == "3M Inc"
+    assert canonical["mfg_part_number"] == "UNKNOWN"
+    assert canonical["raw_description"] == "Stikit Tape"
+    assert canonical["category"] == "General"

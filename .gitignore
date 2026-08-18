@@ -1,29 +1,74 @@
+# # Environment secrets (CRITICAL)
+# .env
+# .env.local
+# *.env
+
+# # Python Virtual Environments
+# venv/
+# .venv/
+# env/
+# ENV/
+
+# # Testing & Cache artifacts
+# .pytest_cache/
+# .coverage
+# htmlcov/
+# __pycache__/
+# *.py[cod]
+# *$py.class
+
+# # IDE & OS files
+# .vscode/
+# .idea/
+# .DS_Store
+# *.swp
+
+# # Runtime data
+# unipulse_checkpoint.db
+
+# # Ignore specific markdown files
+# demo_walkthrough.md
+# interview_cheatsheet.md
+# interview_preparation.md
 # Environment secrets (CRITICAL)
 .env
-.env.local
+.env.*
 *.env
+!.env.example
 
-# Python Virtual Environments
-venv/
-.venv/
-env/
-ENV/
+# Database & runtime files
+*.db
+*.sqlite
+*.sqlite3
+unipulse_checkpoint.db
 
-# Testing & Cache artifacts
-.pytest_cache/
-.coverage
-htmlcov/
+# Python & testing cache
 __pycache__/
 *.py[cod]
 *$py.class
+venv/
+.venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# IDE & OS files
+# Node / Frontend
+node_modules/
+new_frontend/node_modules/
+new_frontend/dist/
+new_frontend/.next/
+dist/
+build/
+
+# IDE & OS
 .vscode/
 .idea/
 .DS_Store
 *.swp
 
-# Ignore specific markdown files
+# Internal prep files
 demo_walkthrough.md
 interview_cheatsheet.md
 interview_preparation.md
+AI_AGENT_BRIEFING.md

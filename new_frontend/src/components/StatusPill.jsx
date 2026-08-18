@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import Icon from './Icon';
 
 const CONFIG = {
@@ -27,7 +28,8 @@ const CONFIG = {
   },
 };
 
-export default function StatusPill({ status = 'idle', label }) {
+/** Memoized: rendered per batch row — primitive props only. */
+function StatusPill({ status = 'idle', label }) {
   const cfg = CONFIG[status] || CONFIG.idle;
   const text = label || cfg.label;
   return (
@@ -41,3 +43,5 @@ export default function StatusPill({ status = 'idle', label }) {
     </span>
   );
 }
+
+export default memo(StatusPill);

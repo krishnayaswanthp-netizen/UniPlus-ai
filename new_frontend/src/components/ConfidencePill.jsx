@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import Icon from './Icon';
 import { confidenceTone, formatPercent } from '../utils/format';
 
@@ -8,7 +9,8 @@ const TONES = {
   neutral: 'bg-surface-container text-on-surface-variant border-line/25',
 };
 
-export default function ConfidencePill({ value, showIcon = true, className = '' }) {
+/** Memoized: rendered per attribute / per batch row — primitive props only. */
+function ConfidencePill({ value, showIcon = true, className = '' }) {
   const tone = TONES[confidenceTone(value)] || TONES.neutral;
   return (
     <span
@@ -20,3 +22,5 @@ export default function ConfidencePill({ value, showIcon = true, className = '' 
     </span>
   );
 }
+
+export default memo(ConfidencePill);

@@ -13,6 +13,8 @@ import asyncio
 import io
 
 import fitz
+import groq
+import httpx
 import pytest
 
 from app.core.security import is_domain_allowed
@@ -497,3 +499,167 @@ def test_is_retryable_accepts_numeric_string_status() -> None:
 
     assert StructuredExtractor._is_retryable(_StringStatusError("boom")) is True
     assert StructuredExtractor._is_retryable(ValueError("schema")) is False
+
+
+# ---------------------------------------------------------------------------
+# Multi-key pool: construction, rotation, 429 failover
+# ---------------------------------------------------------------------------
+
+
+def test_extractor_builds_client_pool_per_key() -> None:
+    """Each configured key gets its own instructor client; ``self.client``
+    stays the first pooled client so single-key usage is unchanged."""
+    extractor = StructuredExtractor(api_keys=["k1", "k2", "k3"])
+    assert extractor.api_keys == ["k1", "k2", "k3"]
+    assert extractor.api_key == "k1"
+    assert len(extractor._clients) == 3
+    assert extractor.client is extractor._clients[0]
+
+    single = StructuredExtractor(api_key="solo")
+    assert len(single._clients) == 1
+    assert single.client is single._clients[0]
+
+
+def test_extractor_api_key_takes_precedence_and_dedupes() -> None:
+    """An explicit ``api_key`` leads the pool and is not duplicated."""
+    extractor = StructuredExtractor(
+        api_key="primary", api_keys=["primary", "secondary"]
+    )
+    assert extractor.api_keys == ["primary", "secondary"]
+
+
+def test_next_rotation_index_cycles() -> None:
+    """Round-robin rotation walks the pool and wraps around."""
+    extractor = StructuredExtractor(api_keys=["k1", "k2", "k3"])
+    assert [extractor._next_rotation_index() for _ in range(6)] == [0, 1, 2, 0, 1, 2]
+
+
+def test_request_attributes_calls_rotate_across_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consecutive extraction calls start at successive pool positions, so
+    concurrent rows spread their token usage across every key."""
+    extractor = StructuredExtractor(api_keys=["k1", "k2"])
+    used: list[int] = []
+
+    for index, client in enumerate(extractor._clients):
+        def make_fake(own_index: int):
+            def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+                used.append(own_index)
+                return [_fake_voltage_attribute()]
+
+            return fake_create
+
+        monkeypatch.setattr(client.chat.completions, "create", make_fake(index))
+
+    for _ in range(4):
+        extractor._request_attributes([{"role": "user", "content": "x"}])
+
+    assert used == [0, 1, 0, 1]
+
+
+def test_request_attributes_switches_key_on_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 on one key fails over to the next key immediately, without the
+    backoff sleep, and the item still succeeds."""
+    extractor = StructuredExtractor(api_keys=["key-a", "key-b"])
+    calls: list[tuple[str, str]] = []
+
+    def fake_key_a(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append(("a", model))
+        raise _FakeRateLimitError("tpm exceeded")
+
+    def fake_key_b(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append(("b", model))
+        return [_fake_voltage_attribute()]
+
+    monkeypatch.setattr(extractor._clients[0].chat.completions, "create", fake_key_a)
+    monkeypatch.setattr(extractor._clients[1].chat.completions, "create", fake_key_b)
+    # Key failover must NOT sleep: the whole point is an immediate retry on a
+    # fresh key instead of waiting out the exhausted key's rate window.
+    monkeypatch.setattr(
+        "app.services.extractor.time.sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("no sleep on failover")),
+    )
+
+    result = extractor._request_attributes([{"role": "user", "content": "x"}])
+
+    assert len(result) == 1
+    assert calls == [("a", extractor.model), ("b", extractor.model)]
+
+
+def test_request_attributes_all_keys_rate_limited_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every key 429s, the extraction fails with the limit error surfaced
+    (one attempt per key, no backoff wall-clock burn)."""
+    extractor = StructuredExtractor(api_keys=["k1", "k2"])
+
+    def _raise_rate_limit(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        raise _FakeRateLimitError("tpm exceeded")
+
+    for client in extractor._clients:
+        monkeypatch.setattr(client.chat.completions, "create", _raise_rate_limit)
+
+    with pytest.raises(RuntimeError, match="tpm exceeded"):
+        extractor._request_attributes([{"role": "user", "content": "x"}])
+
+
+# ---------------------------------------------------------------------------
+# Tool-use generation failure retry (HTTP 400 tool_use_failed)
+# ---------------------------------------------------------------------------
+
+
+def _make_tool_use_error() -> groq.BadRequestError:
+    """A realistic Groq HTTP 400 ``tool_use_failed`` exception."""
+    request = httpx.Request(
+        "POST", "https://api.groq.com/openai/v1/chat/completions"
+    )
+    response = httpx.Response(400, request=request)
+    return groq.BadRequestError(
+        message="tools failed to generate a valid JSON schema",
+        response=response,
+        body={
+            "error": {
+                "code": "tool_use_failed",
+                "message": "tools failed to generate a valid JSON schema",
+            }
+        },
+    )
+
+
+def test_is_tool_use_failure_detects_groq_error() -> None:
+    assert StructuredExtractor._is_tool_use_failure(_make_tool_use_error()) is True
+    assert StructuredExtractor._is_tool_use_failure(_FakeServerError("503")) is False
+    assert StructuredExtractor._is_tool_use_failure(ValueError("boom")) is False
+
+
+def test_request_attributes_sanitizes_then_retries_on_tool_use_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 400 ``tool_use_failed`` retries the SAME model with an aggressively
+    sanitized prompt instead of failing the item."""
+    extractor = StructuredExtractor(api_key="test-key")
+    calls: list[tuple[str, list[dict[str, str]]]] = []
+
+    def fake_create(model: str, **kwargs: object) -> list[IndustrialAttribute]:
+        calls.append((model, kwargs["messages"]))
+        if len(calls) == 1:
+            raise _make_tool_use_error()
+        return [_fake_voltage_attribute()]
+
+    monkeypatch.setattr(extractor.client.chat.completions, "create", fake_create)
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": 'Hose 1/2" with "braided" cover'},
+    ]
+
+    result = extractor._request_attributes(messages)
+
+    assert len(result) == 1
+    assert len(calls) == 2
+    retried_content = calls[1][1][1]["content"]
+    assert '"' not in retried_content
+    assert "'" not in retried_content
+    assert "1/2 in" in retried_content

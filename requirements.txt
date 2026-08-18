@@ -10,6 +10,7 @@ httpx
 python-dotenv
 streamlit
 pytest
+pytest-asyncio
 groq
 beautifulsoup4
 openpyxl

@@ -135,6 +135,21 @@ export async function enrichBatch(file, { onUploadProgress } = {}) {
 }
 
 /**
+ * Poll job status and progress for a batch catalog enrichment job.
+ *
+ * @param {string} jobId
+ * @returns {Promise<object>} — `{ job_id, total_rows, completed_rows, succeeded_count, failed_count, is_complete, avg_confidence, records[] }`
+ */
+export async function getBatchStatus(jobId) {
+  try {
+    const { data } = await http.get(`/api/v1/enrich/batch/${jobId}/status`);
+    return data;
+  } catch (err) {
+    throw normalizeError(err);
+  }
+}
+
+/**
  * Extract FastAPI's `detail` message from an error blob (JSON text).
  * Works for Blob, ArrayBuffer and string payloads.
  * @param {Blob | ArrayBuffer | string} payload

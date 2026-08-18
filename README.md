@@ -5,7 +5,7 @@
 ![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-38BDF8?logo=tailwindcss&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-199%20passing-brightgreen)
 
 **High-throughput B2B product-intelligence engine.** UniPulse AI turns raw
 industrial SKUs (a manufacturer name + part number, an uploaded PDF datasheet,
@@ -52,15 +52,16 @@ profile. The engine:
 5. stamps the exact `source_url` and a `confidence_score` on each attribute.
 
 ### Batch Processing
-Upload a CSV or Excel catalog (`.csv` / `.xlsx`, up to **500 rows**) and process
-every row concurrently with a bounded semaphore — one slow row never sinks the
-run. Each row is reported independently with its own status, confidence and
-processing time. The client applies **pre-flight validation** (25 MB size cap,
-allowed extensions, header/schema guard, empty-file check) before the upload
-even leaves the browser, and the batch view shows live **"X / N items
-completed"** progress alongside the upload/processing bars. Global LLM
-concurrency is capped server-wide (`asyncio.Semaphore(8)`) so two concurrent
-batches can't blow through the provider rate limit.
+Upload a CSV or Excel catalog (`.csv` / `.xlsx`, up to **2,000 rows**) and process
+every row concurrently. With `GROQ_API_KEYS` configured the catalog is sharded
+across the keys (one shard per key, `Semaphore(3)` + 0.1s stagger per shard) so
+large datasets churn through without tripping any single key's TPM limit — one
+slow row never sinks the run. Each row is reported independently with its own
+status, confidence and processing time. The client applies **pre-flight
+validation** (25 MB size cap, allowed extensions, header/schema guard,
+empty-file check) before the upload even leaves the browser, and the batch view
+shows live **"X / N items completed"** progress alongside the upload/
+processing bars.
 
 ### Pint Unit Normalization
 Every extracted `raw_value` is canonicalized through `UnitNormalizer`
@@ -161,10 +162,24 @@ Plain-text equivalent:
 - All blocking work runs off the event loop (`asyncio.to_thread`): DuckDuckGo
   search, PDF parsing, HTML→text extraction, CSV/Excel parsing, workbook
   building, and the LLM call.
+- **Multi-key sharding** — when `GROQ_API_KEYS` is set, batch uploads are
+  split into one contiguous shard per key, processed concurrently with
+  `asyncio.gather` and merged back in original row order. Each shard runs on
+  its own key-bound extractor with a `Semaphore(3)` and a 0.1s dispatch
+  stagger, so a 1,000-row catalog spreads across every key's TPM budget
+  without bursts.
+- **Key pool rotation & 429 failover** — `StructuredExtractor` builds an
+  instructor client per key and round-robins calls across the pool; an HTTP
+  429 logs a warning and immediately fails over to the next key instead of
+  failing the item (a single-key pool keeps the original bounded backoff
+  retries).
+- **Tool-use JSON sanitization** — raw feet/inches quote notation (`16'`,
+  `1/2"`) is normalized to unit words before the LLM call, and a 400
+  `tool_use_failed` error retries with quote characters stripped so malformed
+  tool-use JSON never sinks a row.
 - A global `_LLM_CONCURRENCY = asyncio.Semaphore(8)` caps LLM concurrency
   across every request.
-- Batch rows run under a per-request `_BATCH_CONCURRENCY = 8` semaphore.
-- The LLM layer retries transient HTTP errors (429, 500, 502, 503, 504) with
+- The LLM layer retries transient HTTP errors (500, 502, 503, 504) with
   exponential backoff + jitter before switching to the fallback model, and
   preserves the original error message if everything fails.
 
@@ -237,7 +252,7 @@ Enrich one product. Accepts a JSON body (`ProductEnrichmentRequest`) or a
 ### `POST /api/v1/enrich/batch`
 
 Enrich many products from an uploaded file. Multipart field `file` (`.csv` or
-`.xlsx`, ≤ 500 rows). Headers are tolerant:
+`.xlsx`, ≤ 2,000 rows). Headers are tolerant:
 
 `Manufacturer` (alias `Manufacturer_Name`, `manufacturer`),
 `Part_Number` (alias `PartNumber`, `Part Number`, `part_number`),
@@ -282,7 +297,7 @@ message carrying the exact failure reason; one bad row never fails the batch.
 | --- | --- |
 | `400` | Empty / unreadable upload |
 | `415` | File is not `.csv` or `.xlsx` |
-| `422` | More than 500 rows |
+| `422` | More than 2,000 rows |
 | `503` | `GROQ_API_KEY` not configured |
 
 ### `POST /api/v1/export/excel`
@@ -338,6 +353,7 @@ pip install -r requirements.txt
 # Backend keys (root)
 cp .env.example .env
 #   -> set GROQ_API_KEY=<your-key>
+#   -> optional: GROQ_API_KEYS="gsk_...,gsk_...,gsk_..." for multi-key sharding
 
 # Frontend keys (new_frontend/)
 cp new_frontend/.env.example new_frontend/.env
@@ -390,6 +406,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/enrich/single \
 | Variable | Location | Required | Purpose |
 | --- | --- | --- | --- |
 | `GROQ_API_KEY` | root `.env` | ✅ | LLM structured extraction (Groq) |
+| `GROQ_API_KEYS` | root `.env` | ❌ | Comma-separated Groq keys for batch sharding + key rotation / 429 failover (falls back to `GROQ_API_KEY`) |
 | `OPENAI_API_KEY` | root `.env` | ❌ | Reserved / optional alternate provider |
 | `GEMINI_API_KEY` | root `.env` | ❌ | Reserved / optional alternate provider |
 | `ALLOWED_DOMAINS` | root `.env` | ❌ | Exclusive web-source allow-list (JSON array, e.g. `["example.com"]`); empty = default-allow non-retail domains |
@@ -411,11 +428,19 @@ unipluse-ai/
 │   │   ├── config.py             # pydantic-settings (.env → Settings)
 │   │   └── security.py           # domain whitelist / retail-blocklist policy
 │   ├── schemas/
-│   │   └── enrichment.py         # request/response Pydantic models
+│   │   ├── enrichment.py         # request/response Pydantic models
+│   │   └── product.py            # Stage 1 canonical ProductRecord pipeline schema
+│   ├── db/
+│   │   └── checkpoint_store.py   # Stage 4 SQLite checkpoints + enrichment/scrape caches
 │   └── services/
 │       ├── scraper.py            # DuckDuckGo search + whitelisted scraping
 │       ├── extractor.py          # Groq + instructor structured extraction
-│       ├── normalizer.py         # Pint + RapidFuzz unit normalization
+│       ├── normalizer.py         # UnitNormalizer (Pint + RapidFuzz) + InputNormalizer (header alias mapping)
+│       ├── deterministic.py      # Stage 3 regex rule engine (REGEX attributes, coverage, short-circuit)
+│       ├── context_reducer.py    # Stage 5 spec-dense context reducer (~1,500 chars) + scrape cache
+│       ├── rate_limiter.py       # Stage 6 adaptive RPM/TPM limiter, 429 backoff, key rotation, async queue
+│       ├── llm_8b.py             # Stage 7 primary 8B extractor (llama-3.1-8b-instant, rate-limited, LLM_8B source)
+│       ├── validator.py          # Stage 8 tri-signal validation (rules + completeness + confidence → 70B escalation)
 │       └── parser.py             # PyMuPDF datasheet parsing
 ├── new_frontend/                 # ★ React UI (React 18 + Vite 5 + Tailwind 3)
 │   ├── src/
@@ -429,11 +454,19 @@ unipluse-ai/
 │   ├── index.html
 │   ├── vite.config.js
 │   └── tailwind.config.js        # design tokens (light + dark themes)
-├── tests/                        # 120 tests (offline — no API keys needed)
+├── tests/                        # 199 tests (offline — no API keys needed)
 │   ├── test_api.py               # endpoint behavior (fakes for scraper/LLM)
 │   ├── test_pipeline.py          # PDF, whitelist, scraper, extraction, retries
-│   ├── test_normalizer.py        # unit normalization edge cases
-│   └── test_extractor.py         # empty-extraction & truncation signals
+│   ├── test_normalizer.py        # UnitNormalizer + InputNormalizer (header mapping, placeholders)
+│   ├── test_deterministic.py     # regex extraction, coverage ratio, short-circuit routing
+│   ├── test_checkpoint_store.py  # SQLite checkpoints + enrichment/scrape caches
+│   ├── test_context_reducer.py   # HTML cleaning, spec scoring, context reduction, cache hits
+│   ├── test_rate_limiter.py      # RPM/TPM limits, 429 backoff, key rotation, async queue
+│   ├── test_llm_8b.py            # mock-client extraction, merge rules, key rotation, prompt build
+│   ├── test_validator.py         # business-rule checks, tri-signal gate, 70B escalation
+│   ├── test_extractor.py         # empty-extraction & truncation signals
+│   ├── test_schemas.py           # ProductRecord schema, SKU, status/error tracking
+│   └── test_config.py            # Settings / GROQ_API_KEYS parsing
 ├── requirements.txt              # Python dependencies
 ├── run_frontend.py               # legacy Streamlit dashboard launcher (optional)
 └── .env.example                  # backend environment template
@@ -453,4 +486,4 @@ pytest -q
 ```
 
 The suite runs fully offline: network calls and the LLM are faked, so it passes
-without API keys or internet access. `120 passed` on a clean checkout.
+without API keys or internet access. `199 passed` on a clean checkout.

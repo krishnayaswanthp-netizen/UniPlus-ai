@@ -1,6 +1,8 @@
+import { memo } from 'react';
 import Icon from './Icon';
 
-export default function StatCard({ icon, label, value, sub, progress }) {
+/** Memoized: metric cards re-render only when their primitive props change. */
+function StatCard({ icon, label, value, sub, progress }) {
   return (
     <div className="tactile-surface relative flex-1 overflow-hidden p-8">
       <div className="absolute right-0 top-0 p-4 opacity-10">
@@ -26,3 +28,5 @@ export default function StatCard({ icon, label, value, sub, progress }) {
     </div>
   );
 }
+
+export default memo(StatCard);

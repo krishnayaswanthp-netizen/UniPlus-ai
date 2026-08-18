@@ -25,9 +25,12 @@ normalizes cleanly to ``"0.75 in"``.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pint
 from rapidfuzz import fuzz
+
+from app.schemas.product import ProductIdentity, ProductRecord, RawInputData, RowStatus
 
 # ---------------------------------------------------------------------------
 # Module-level building blocks
@@ -644,3 +647,179 @@ class UnitNormalizer:
             )
 
         return _fmt_fraction(magnitude), UNIT_SYMBOLS.get(canonical, canonical)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Input Normalizer & Header Alias Mapping Engine
+# ---------------------------------------------------------------------------
+# Converts raw catalog rows from arbitrary enterprise distributor files into
+# clean, canonical ``ProductRecord`` objects: header aliases are mapped
+# (``Mfg_Part_Num`` -> ``mfg_part_number``), parenthetical supplier/ERP codes
+# are stripped from manufacturer names (``3M Inc (2435)`` -> ``3M Inc``),
+# placeholder strings are filtered (``-- No Unilog Brand --`` -> ``None``),
+# and the row is emitted in the Stage 1 canonical shape, ready for the
+# deterministic stage of the pipeline (``status = ROW_READY``).
+
+
+class InputNormalizer:
+    """Normalizes raw catalog rows and maps non-standard distributor headers
+    to canonical ProductRecord structures."""
+
+    MANUFACTURER_ALIASES = {
+        "manufacturer", "part_manuf", "part_manufacturer", "mfg_manuf",
+        "manufacturer_name", "mfr", "brand", "mfr_name", "vendor", "e1_brand",
+        "unilog_brand", "dib_brand",
+    }
+
+    PART_NUMBER_ALIASES = {
+        "mfg_part_num", "mfg_part_number", "part_num", "part_number",
+        "partnumber", "part_no", "sku", "part", "mpn", "item_num",
+    }
+
+    DESCRIPTION_ALIASES = {
+        "part_desc", "part_description", "raw_description", "description",
+        "product_description", "desc", "item_description", "product_name",
+    }
+
+    CATEGORY_ALIASES = {
+        "category", "prod_cat", "product_category", "cat", "segment", "dept",
+        "class",
+    }
+
+    #: Non-informative placeholder strings filtered out of raw cells.
+    PLACEHOLDERS = {
+        "-- unbranded --", "-- no unilog brand --", "-- no dib brand --",
+        "unbranded", "n/a", "none", "unknown", "null", "--",
+    }
+
+    @classmethod
+    def clean_placeholder(cls, value: str | None) -> str | None:
+        """Return ``None`` when *value* is empty or a known placeholder string.
+
+        ``"-- Unbranded --"`` -> ``None``; ``"3M"`` -> ``"3M"``.
+        """
+        if not value:
+            return None
+        cleaned = str(value).strip()
+        if not cleaned:
+            return None
+        if cleaned.lower() in cls.PLACEHOLDERS:
+            return None
+        return cleaned
+
+    @classmethod
+    def clean_manufacturer_name(cls, raw_name: str | None) -> str:
+        """Strip trailing parenthetical supplier/ERP codes from a company name.
+
+        ``'3M Inc (2435)'`` -> ``'3M Inc'``, ``'Mirka Abrasives Inc (MIRUS)'``
+        -> ``'Mirka Abrasives Inc'``. Null/placeholder input falls back to
+        ``"Unknown"``.
+        """
+        cleaned = cls.clean_placeholder(raw_name)
+        if not cleaned:
+            return "Unknown"
+        # Strip trailing parenthetical expressions like (2435) or (MIRUS).
+        stripped = re.sub(r"\s*\([^)]*\)$", "", cleaned)
+        return stripped.strip() or "Unknown"
+
+    def _find_matching_key(
+        self, row_dict: dict[str, Any], alias_set: set[str]
+    ) -> str | None:
+        """Return the first *row_dict* key matching any alias in *alias_set*.
+
+        Headers are matched flexibly (any casing, spaces or underscores):
+        ``"Mfg Part Num"``, ``"Mfg_Part_Num"`` and ``"mfg_part_num"`` all
+        resolve to the same alias. Aliases are iterated in sorted order so the
+        priority between present aliases is deterministic — set iteration
+        order is randomized per process (``PYTHONHASHSEED``), which would
+        otherwise make the winner (e.g. ``Part_Manuf`` vs ``Unilog_Brand``)
+        flip between runs.
+        """
+        normalized_keys = {
+            re.sub(r"[\s_]+", "", str(k).lower()): k for k in row_dict.keys()
+        }
+        for alias in sorted(alias_set):
+            norm_alias = re.sub(r"[\s_]+", "", alias.lower())
+            if norm_alias in normalized_keys:
+                return normalized_keys[norm_alias]
+        return None
+
+    def map_header_aliases(self, row_dict: dict[str, Any]) -> dict[str, str]:
+        """Extract canonical fields from a raw distributor row dictionary.
+
+        Returns ``{"manufacturer", "mfg_part_number", "raw_description",
+        "category"}`` with placeholders filtered and parenthetical
+        supplier/ERP codes stripped from the manufacturer name.
+        """
+        mfg_key = self._find_matching_key(row_dict, self.MANUFACTURER_ALIASES)
+        part_key = self._find_matching_key(row_dict, self.PART_NUMBER_ALIASES)
+        desc_key = self._find_matching_key(row_dict, self.DESCRIPTION_ALIASES)
+        cat_key = self._find_matching_key(row_dict, self.CATEGORY_ALIASES)
+
+        raw_mfg = row_dict[mfg_key] if mfg_key else None
+        mfg = self.clean_manufacturer_name(
+            str(raw_mfg) if raw_mfg is not None else None
+        )
+
+        raw_part = row_dict[part_key] if part_key else None
+        part_cleaned = self.clean_placeholder(
+            str(raw_part) if raw_part is not None else None
+        )
+        part_num = part_cleaned if part_cleaned else "UNKNOWN"
+
+        raw_desc = row_dict[desc_key] if desc_key else None
+        desc_cleaned = self.clean_placeholder(
+            str(raw_desc) if raw_desc is not None else None
+        )
+        desc = desc_cleaned if desc_cleaned else ""
+
+        raw_cat = row_dict[cat_key] if cat_key else None
+        cat_cleaned = self.clean_placeholder(
+            str(raw_cat) if raw_cat is not None else None
+        )
+        cat = cat_cleaned if cat_cleaned else "General"
+
+        return {
+            "manufacturer": mfg,
+            "mfg_part_number": part_num,
+            "raw_description": desc,
+            "category": cat,
+        }
+
+    def normalize_row(
+        self,
+        row_dict: dict[str, Any],
+        row_id: int,
+        original_index: int,
+        file_source: str | None = None,
+    ) -> ProductRecord:
+        """Convert a raw CSV/XLSX row dictionary into a clean ``ProductRecord``.
+
+        The returned record carries the canonical identity fields, the
+        original header/value pairs for provenance, and starts with
+        ``status = ROW_READY`` ready for the deterministic stage.
+        """
+        canonical_data = self.map_header_aliases(row_dict)
+
+        identity = ProductIdentity(
+            row_id=row_id,
+            mfg_part_number=canonical_data["mfg_part_number"],
+            manufacturer=canonical_data["manufacturer"],
+            raw_description=canonical_data["raw_description"],
+            category=canonical_data["category"],
+        )
+
+        raw_headers = {
+            str(k): str(v) for k, v in row_dict.items() if v is not None
+        }
+        raw_data = RawInputData(
+            raw_headers=raw_headers,
+            original_row_index=original_index,
+            file_source=file_source,
+        )
+
+        return ProductRecord(
+            identity=identity,
+            raw_data=raw_data,
+            status=RowStatus.ROW_READY,
+        )

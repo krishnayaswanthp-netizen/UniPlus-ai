@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # --- App metadata ---------------------------------------------------
@@ -23,8 +24,36 @@ class Settings(BaseSettings):
 
     # --- API keys -------------------------------------------------------
     openai_api_key: str | None = None
-    gemini_api_key: str | None = None
     groq_api_key: str | None = None
+    #: Comma-separated list of Groq keys used for multi-key sharding / rotation
+    #: (one key per shard, automatic 429 failover). Falls back to
+    #: ``GROQ_API_KEY`` when empty/unset.
+    groq_api_keys: str | None = None
+
+    @property
+    def groq_api_key_list(self) -> list[str]:
+        """Groq API keys as a clean list.
+
+        Splits ``GROQ_API_KEYS`` on commas and strips surrounding quotes and
+        whitespace from every entry (``'" gsk_a , gsk_b "'`` ->
+        ``["gsk_a", "gsk_b"]``). When ``GROQ_API_KEYS`` yields no usable
+        keys (empty, unset, or only commas/whitespace), falls back gracefully
+        to ``GROQ_API_KEY``.
+        """
+        keys = self._parse_keys(self.groq_api_keys)
+        if not keys:
+            keys = self._parse_keys(self.groq_api_key)
+        return keys
+
+    @staticmethod
+    def _parse_keys(raw: str | None) -> list[str]:
+        """Split *raw* on commas, stripping quotes/whitespace per entry."""
+        keys: list[str] = []
+        for key in (raw or "").split(","):
+            key = key.strip().strip('"').strip("'").strip()
+            if key:
+                keys.append(key)
+        return keys
 
     # --- Domain allow-list ----------------------------------------------
     # Provide as a JSON array in .env, e.g. ALLOWED_DOMAINS=["example.com"]

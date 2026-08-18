@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { CATEGORIES, enrichSingle } from '../services/api';
 import { useToasts } from '../context/ToastContext';
 import { useWorkspace } from '../context/WorkspaceContext';
@@ -13,7 +13,8 @@ const PROCESSING_PHASES = [
   'Normalizing units',
 ];
 
-function ResultSheet({ result, onReset }) {
+/** Memoized: re-renders only when the result object or reset callback changes. */
+const ResultSheet = memo(function ResultSheet({ result, onReset }) {
   const { runExport, exporting } = useWorkspace();
   const attributes = result.enriched_attributes || [];
   const description = `${result.category || 'Uncategorized'} · ${attributes.length} attribute(s)`;
@@ -72,7 +73,7 @@ function ResultSheet({ result, onReset }) {
       </div>
     </div>
   );
-}
+});
 
 export default function SingleSkuPage() {
   const { setSingleResult } = useWorkspace();
@@ -149,7 +150,8 @@ export default function SingleSkuPage() {
     }
   };
 
-  const handleReset = () => {
+  // Stable identity so the memoized ResultSheet doesn't re-render on parent churn.
+  const handleReset = useCallback(() => {
     setResult(null);
     setSingleResult(null);
     setStatus('idle');
@@ -157,7 +159,7 @@ export default function SingleSkuPage() {
     setFile(null);
     setFileError('');
     setNotes('');
-  };
+  }, []);
 
   return (
     <>

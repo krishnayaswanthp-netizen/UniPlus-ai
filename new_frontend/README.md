@@ -42,7 +42,7 @@ The API service layer lives in `src/services/api.js` and targets
 | UI feature              | Endpoint                     | Method / payload                                             |
 | ----------------------- | ---------------------------- | ------------------------------------------------------------ |
 | Single SKU enrichment   | `/api/v1/enrich/single`      | `POST` multipart: `manufacturer_name`, `part_number`, `category`, optional `raw_description`, optional `file` (PDF) |
-| Batch catalog upload    | `/api/v1/enrich/batch`       | `POST` multipart: `file` (`.csv` / `.xlsx`, ≤ 500 rows)      |
+| Batch catalog upload    | `/api/v1/enrich/batch`       | `POST` multipart: `file` (`.csv` / `.xlsx`, ≤ 2,000 rows)      |
 | Excel export            | `/api/v1/export/excel`       | `POST` JSON body (record array), `responseType: 'blob'` → `.xlsx` download |
 
 Error handling: every network failure / FastAPI rejection is normalized into an
