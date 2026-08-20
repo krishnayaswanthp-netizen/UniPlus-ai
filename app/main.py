@@ -62,6 +62,7 @@ from app.schemas.product import (
     RowStatus,
 )
 from app.services.extractor import StructuredExtractor, _MAX_INPUT_CHARS
+from app.services.exporter import CatalogExporter
 from app.services.parser import PDFParser
 from app.services.rate_limiter import AdaptiveRateLimiter
 from app.services.scraper import WhitelistedSearchScraper
@@ -965,73 +966,22 @@ def _style_sheet(workbook: Workbook, title: str, widths: list[int]) -> None:
 
 
 def _build_workbook(
-    products: list[tuple[ProductEnrichmentResponse, str, str]],
+    products: list[tuple[ProductEnrichmentResponse, str, str]] | list[Any],
 ) -> Workbook:
-    """Render enriched products into a two-sheet Excel workbook."""
-    workbook = Workbook()
-    products_sheet = workbook.active
-    products_sheet.title = "Products"
-    products_sheet.append(
-        [
-            "sku_id",
-            "category",
-            "manufacturer_name",
-            "part_number",
-            "overall_confidence",
-            "processing_time_ms",
-            "estimated_cost_usd",
-            "attribute_count",
-        ]
-    )
-    attributes_sheet = workbook.create_sheet("Attributes")
-    attributes_sheet.append(
-        [
-            "sku_id",
-            "field_name",
-            "raw_value",
-            "normalized_value",
-            "unit",
-            "confidence_score",
-            "source_url",
-        ]
-    )
-
-    for response, manufacturer, part_number in products:
-        products_sheet.append(
-            [
-                response.sku_id,
-                response.category,
-                manufacturer,
-                part_number,
-                response.overall_confidence,
-                response.processing_time_ms,
-                response.estimated_cost_usd,
-                len(response.enriched_attributes),
-            ]
-        )
-        for raw_attr in response.enriched_attributes:
-            attribute = _coerce_enrichment_attribute(raw_attr)
-            if attribute is None:
-                continue
-            attributes_sheet.append(
-                [
-                    response.sku_id,
-                    attribute.field_name,
-                    attribute.raw_value,
-                    attribute.normalized_value,
-                    attribute.unit,
-                    attribute.confidence_score,
-                    attribute.source_url,
-                ]
-            )
-
-    _style_sheet(workbook, "Products", [34, 14, 22, 20, 18, 18, 18, 16])
-    _style_sheet(
-        workbook,
-        "Attributes",
-        [34, 22, 20, 20, 10, 18, 44],
-    )
-    return workbook
+    """Render enriched products into a flat 252-column Unilog delivery schema Excel workbook."""
+    processed_items: list[dict[str, Any]] = []
+    for item in products:
+        if isinstance(item, tuple) and len(item) == 3:
+            resp, mfg, part = item
+            d = resp.model_dump()
+            d["manufacturer_name"] = mfg or d.get("manufacturer_name", "")
+            d["part_number"] = part or d.get("part_number", "")
+            processed_items.append(d)
+        elif isinstance(item, ProductEnrichmentResponse):
+            processed_items.append(item.model_dump())
+        else:
+            processed_items.append(item)
+    return CatalogExporter.build_unilog_workbook(processed_items)
 
 
 def _render_workbook(

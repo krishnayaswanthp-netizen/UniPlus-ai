@@ -567,23 +567,20 @@ def test_export_excel_generates_workbook(client: TestClient) -> None:
     assert response.headers["content-disposition"].startswith("attachment")
 
     workbook = openpyxl.load_workbook(io.BytesIO(response.content))
-    assert workbook.sheetnames == ["Products", "Attributes"]
+    assert "Enriched Catalog" in workbook.sheetnames
 
-    products_sheet = workbook["Products"]
-    headers = [cell.value for cell in next(products_sheet.iter_rows(min_row=1, max_row=1))]
-    assert headers[:4] == ["sku_id", "category", "manufacturer_name", "part_number"]
-    product_rows = list(products_sheet.iter_rows(min_row=2, values_only=True))
+    catalog_sheet = workbook["Enriched Catalog"]
+    headers = [cell.value for cell in next(catalog_sheet.iter_rows(min_row=1, max_row=1))]
+    assert len(headers) == 252
+    assert headers[0] == "SKU - MY_PART_NUMBER"
+    assert headers[1] == "MANUFACTURER_NAME"
+    assert headers[4] == "PART_NUMBER"
+
+    product_rows = list(catalog_sheet.iter_rows(min_row=2, values_only=True))
     assert len(product_rows) == 1
     assert product_rows[0][0] == "Honeywell-TH6320U2008"
-    assert product_rows[0][2] == "Honeywell"  # manufacturer survives the round-trip
-
-    attributes_sheet = workbook["Attributes"]
-    attribute_rows = list(attributes_sheet.iter_rows(min_row=2, values_only=True))
-    assert len(attribute_rows) == 1
-    assert attribute_rows[0][0] == "Honeywell-TH6320U2008"
-    assert attribute_rows[0][1] == "voltage"
-    assert attribute_rows[0][3] == "120"
-    assert attribute_rows[0][4] == "V"
+    assert product_rows[0][1] == "Honeywell"
+    assert product_rows[0][4] == "TH6320U2008"
 
 
 def test_export_excel_accepts_json_body(client: TestClient) -> None:

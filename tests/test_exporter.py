@@ -86,3 +86,16 @@ def test_export_to_excel_creates_four_tabs(tmp_path):
     ws_review = wb["Manual Review Queue"]
     assert ws_review.max_row >= 2
     assert ws_review.cell(row=2, column=1).value == 2
+
+    # Check Enriched Catalog has 252 columns
+    ws_catalog = wb["Enriched Catalog"]
+    headers = [cell.value for cell in next(ws_catalog.iter_rows(min_row=1, max_row=1))]
+    assert len(headers) == 252
+
+
+def test_export_excel_bytes_unilog_schema():
+    rec = _make_sample_record()
+    b = CatalogExporter.export_excel_bytes([rec])
+    assert isinstance(b, bytes)
+    assert len(b) > 0
+

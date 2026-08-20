@@ -55,6 +55,11 @@ class Settings(BaseSettings):
                 keys.append(key)
         return keys
 
+    # --- LLM Model Identifiers ------------------------------------------
+    primary_model: str = "openai/gpt-oss-20b"
+    fallback_model: str = "llama-3.1-70b-versatile"
+    secondary_fallback_model: str = "llama-3.1-8b-instant"
+
     # --- Domain allow-list ----------------------------------------------
     # Provide as a JSON array in .env, e.g. ALLOWED_DOMAINS=["example.com"]
     allowed_domains: list[str] = []

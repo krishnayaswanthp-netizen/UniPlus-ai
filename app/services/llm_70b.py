@@ -281,18 +281,42 @@ class LLM70BFallbackExtractor:
                     )
                 else:
                     raw_client = AsyncGroq(api_key=self._get_current_key())
-                    chat_resp = await raw_client.chat.completions.create(
-                        model=self.model_name,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "You are a top-tier industrial technical specialist repairing product attributes. Respond ONLY with a valid JSON object containing an 'attributes' list.",
-                            },
-                            {"role": "user", "content": prompt},
-                        ],
-                        response_format={"type": "json_object"},
-                        temperature=0.1,
-                    )
+                    try:
+                        chat_resp = await raw_client.chat.completions.create(
+                            model=self.model_name,
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "You are a top-tier industrial technical specialist repairing product attributes. Respond ONLY with a valid JSON object containing an 'attributes' list.",
+                                },
+                                {"role": "user", "content": prompt},
+                            ],
+                            response_format={"type": "json_object"},
+                            temperature=0.1,
+                        )
+                    except Exception as model_err:
+                        err_str = str(model_err).lower()
+                        if "404" in err_str or "model_not_found" in err_str or "decommissioned" in err_str:
+                            fallback_m = "llama-3.1-8b-instant" if "8b" not in self.model_name else "llama-3.1-70b-versatile"
+                            logger.warning(
+                                "70B model %s returned 404/not_found; failing over to %s",
+                                self.model_name,
+                                fallback_m,
+                            )
+                            chat_resp = await raw_client.chat.completions.create(
+                                model=fallback_m,
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": "You are a top-tier industrial technical specialist repairing product attributes. Respond ONLY with a valid JSON object containing an 'attributes' list.",
+                                    },
+                                    {"role": "user", "content": prompt},
+                                ],
+                                response_format={"type": "json_object"},
+                                temperature=0.1,
+                            )
+                        else:
+                            raise
                     content_str = chat_resp.choices[0].message.content or "{}"
                     clean_str = content_str.strip()
                     if "<think>" in clean_str and "</think>" in clean_str:
