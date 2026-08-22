@@ -56,7 +56,7 @@ class Settings(BaseSettings):
         return keys
 
     # --- LLM Model Identifiers ------------------------------------------
-    primary_model: str = "openai/gpt-oss-20b"
+    primary_model: str = "llama-3.1-8b-instant"
     fallback_model: str = "llama-3.1-70b-versatile"
     secondary_fallback_model: str = "llama-3.1-8b-instant"
 

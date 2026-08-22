@@ -112,7 +112,7 @@ def test_parse_retry_after_from_message_body() -> None:
     """The Groq TPM message "Please try again in 3.455s" is parsed as the
     backoff window even without a Retry-After header."""
     err = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per "
+        "Rate limit reached for model llama-3.1-70b-versatile on tokens per "
         "minute (TPM): Limit 12000, Used 11898, Requested 886. "
         "Please try again in 3.455s."
     )
@@ -203,12 +203,12 @@ def test_is_tpd_exhausted_detection() -> None:
     from app.services.rate_limiter import is_tpd_exhausted
 
     err1 = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per day (TPD): Limit 100000, Used 99954. Please try again in 10m34s."
+        "Rate limit reached for model llama-3.1-70b-versatile on tokens per day (TPD): Limit 100000, Used 99954. Please try again in 10m34s."
     )
     assert is_tpd_exhausted(err1) is True
 
     err2 = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per minute (TPM): Limit 12000, Used 11898. Please try again in 3s."
+        "Rate limit reached for model llama-3.1-70b-versatile on tokens per minute (TPM): Limit 12000, Used 11898. Please try again in 3s."
     )
     assert is_tpd_exhausted(err2) is False
 

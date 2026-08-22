@@ -377,7 +377,7 @@ def test_429_sleeps_with_parsed_message_backoff(
         fake.calls += 1
         if fake.calls == 1:
             raise _rate_limit_error(
-                "Rate limit reached for model llama-3.3-70b-versatile on tokens "
+                "Rate limit reached for model llama-3.1-70b-versatile on tokens "
                 "per minute (TPM): Limit 12000, Used 11898, Requested 886. "
                 "Please try again in 1.2s."
             )

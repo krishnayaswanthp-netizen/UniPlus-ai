@@ -53,9 +53,9 @@ from app.services.rate_limiter import (
 )
 
 #: Preferred Groq model for structured extraction.
-PRIMARY_MODEL = "openai/gpt-oss-20b"
+PRIMARY_MODEL = "llama-3.1-8b-instant"
 #: Fallback model used when the primary model fails.
-FALLBACK_MODEL = "llama-3.3-70b-versatile"
+FALLBACK_MODEL = "llama-3.1-70b-versatile"
 
 #: Strict JSON Schema for Groq Structured Outputs
 INDUSTRIAL_ATTRIBUTES_SCHEMA = {
@@ -632,6 +632,23 @@ class StructuredExtractor:
                                     )
                             continue
                         if not self._is_retryable(exc):
+                            status_code = getattr(exc, "status_code", None)
+                            err_msg = str(exc).lower()
+                            if status_code == 404 or "404" in err_msg or "model_not_found" in err_msg or "notfound" in err_msg:
+                                logger.warning(
+                                    "Model %s returned 404 / model_not_found; attempting fallback to llama-3.1-8b-instant",
+                                    model,
+                                )
+                                try:
+                                    fallback_result = active_client.chat.completions.create(
+                                        model="llama-3.1-8b-instant",
+                                        messages=messages,
+                                        response_format={"type": "json_object"},
+                                        temperature=0.1,
+                                    )
+                                    return self._parse_completion_response(fallback_result)
+                                except Exception:
+                                    pass
                             break
                         if attempt + 1 < _MAX_ATTEMPTS_PER_MODEL:
                             time.sleep(2**attempt + random.uniform(0.0, 2**attempt))
