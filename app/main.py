@@ -67,7 +67,7 @@ from app.services.parser import PDFParser
 from app.services.rate_limiter import AdaptiveRateLimiter
 from app.services.scraper import WhitelistedSearchScraper
 
-_checkpoint_store = CheckpointStore("unipulse_checkpoint.db")
+_checkpoint_store = CheckpointStore(settings.database_path)
 
 app = FastAPI(
     title=settings.app_name,
@@ -110,11 +110,9 @@ _FALLBACK_SOURCE_URL = "local://user-provided"
 #: Raised to 2,000 so official hackathon datasets (1,000 rows) fit comfortably.
 _MAX_BATCH_ROWS = 2000
 
-#: Rows processed concurrently inside a single key-shard. Each shard is bound
-#: to one Groq API key, so this is the per-key concurrency ceiling — a single
-#: key's TPM budget is never hammered by its whole share of the catalog at
-#: once.
-_SHARD_CONCURRENCY = 3
+#: Rows processed concurrently inside a single key-shard. Bounded to 2 to keep
+#: memory strictly < 250MB and prevent OOM on Render free tier (512MB RAM cap).
+_SHARD_CONCURRENCY = 2
 #: Stagger between row dispatches inside a shard. Produces steady, non-bursty
 #: per-key throughput instead of a wall of simultaneous calls.
 _SHARD_DISPATCH_DELAY = 0.1
@@ -698,9 +696,9 @@ async def _process_batch_background(
     job_id: str,
     rows: list[dict[str, str]],
     extractors: list[StructuredExtractor],
-    chunk_size: int = 20,
+    chunk_size: int = 4,
 ) -> None:
-    """Process batch rows in background chunks of 20 with sequential key rotation,
+    """Process batch rows in background micro-chunks (default 4) with sequential key rotation,
     cooldown wait logic, and immediate SQLite CheckpointStore persistence.
     """
     job = _BATCH_JOBS.get(job_id)
@@ -731,7 +729,8 @@ async def _process_batch_background(
 
         # 2. Sequential Key Assignment across available extractors
         extractor = extractor_cycle[chunk_idx % len(extractor_cycle)]
-        semaphore = asyncio.Semaphore(_SHARD_CONCURRENCY)
+        # Limit concurrent row processing to maximum 2 simultaneous row executions to prevent memory spikes
+        semaphore = asyncio.Semaphore(2)
 
         async def process_row(row: dict[str, str], row_id: int) -> BatchItemResult:
             try:
@@ -880,6 +879,10 @@ async def _process_batch_background(
         else:
             job["avg_confidence"] = 0.0
 
+        # Trigger garbage collection between micro-chunks to keep memory strictly < 250MB
+        import gc
+        gc.collect()
+
     job["is_complete"] = True
 
 
@@ -890,7 +893,7 @@ async def enrich_batch(
 ) -> Any:
     """Enrich many products from an uploaded CSV / Excel file.
 
-    Returns HTTP 202 Accepted with a job_id for async 20-row chunk background
+    Returns HTTP 202 Accepted with a job_id for async 4-row chunk background
     processing, pollable via `GET /api/v1/enrich/batch/{job_id}/status`.
     """
     raw = await file.read()
@@ -914,7 +917,7 @@ async def enrich_batch(
     }
 
     if sync:
-        await _process_batch_background(job_id, rows, extractors, chunk_size=20)
+        await _process_batch_background(job_id, rows, extractors, chunk_size=4)
         job = _BATCH_JOBS[job_id]
         return BatchEnrichmentResponse(
             total=job["total_rows"],
@@ -923,7 +926,7 @@ async def enrich_batch(
             results=[BatchItemResult.model_validate(r) for r in job["records"]],
         )
 
-    asyncio.create_task(_process_batch_background(job_id, rows, extractors, chunk_size=20))
+    asyncio.create_task(_process_batch_background(job_id, rows, extractors, chunk_size=4))
 
     return {
         "job_id": job_id,

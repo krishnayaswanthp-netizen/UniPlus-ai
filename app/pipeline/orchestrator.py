@@ -116,6 +116,10 @@ class UniPulsePipeline:
         # --- Stage 11: Observability Metrics ---
         self.metrics_tracker.record_transition(record)
 
+        # Explicitly trigger garbage collection between rows to keep memory < 250MB
+        import gc
+        gc.collect()
+
         return record
 
     async def process_batch(

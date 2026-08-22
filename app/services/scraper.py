@@ -310,10 +310,17 @@ class WhitelistedSearchScraper:
     @staticmethod
     def _html_to_text(html: str) -> str:
         """Strip boilerplate and extract readable text from *html*."""
-        soup = BeautifulSoup(html, "html.parser")
-        for tag in _NOISE_TAGS:
-            for element in soup(tag):
-                element.decompose()
-        text = soup.get_text(separator="\n")
-        lines = (line.strip() for line in text.splitlines())
-        return "\n".join(line for line in lines if line)
+        if not html:
+            return ""
+        # Cap incoming HTML to avoid retaining massive DOM trees in memory
+        soup = BeautifulSoup(html[:500000], "html.parser")
+        try:
+            for tag in _NOISE_TAGS:
+                for element in soup(tag):
+                    element.decompose()
+            text = soup.get_text(separator="\n")
+            lines = (line.strip() for line in text.splitlines())
+            clean_text = "\n".join(line for line in lines if line)
+            return clean_text[:6000]
+        finally:
+            soup.decompose()

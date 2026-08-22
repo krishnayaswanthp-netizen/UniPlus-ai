@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     fallback_model: str = "llama-3.1-70b-versatile"
     secondary_fallback_model: str = "llama-3.1-8b-instant"
 
+    # --- Database / Persistence -----------------------------------------
+    database_path: str = "unipulse_checkpoint.db"
+
     # --- Domain allow-list ----------------------------------------------
     # Provide as a JSON array in .env, e.g. ALLOWED_DOMAINS=["example.com"]
     allowed_domains: list[str] = []

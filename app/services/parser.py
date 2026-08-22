@@ -38,11 +38,10 @@ class PDFParser:
         except Exception as exc:  # fitz.FileDataError and friends
             raise ValueError(f"Corrupt or unreadable PDF: {exc}") from exc
 
-        if document.needs_pass:
-            document.close()
-            raise ValueError("Password-protected PDF; cannot extract text without credentials")
-
         try:
+            if document.needs_pass:
+                raise ValueError("Password-protected PDF; cannot extract text without credentials")
+
             blocks: list[str] = []
             for page in document:
                 blocks.append(self._page_text(page))
