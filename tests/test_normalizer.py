@@ -560,3 +560,25 @@ def test_missing_part_number_falls_back_to_unknown() -> None:
     assert canonical["mfg_part_number"] == "UNKNOWN"
     assert canonical["raw_description"] == "Stikit Tape"
     assert canonical["category"] == "General"
+
+
+def test_direct_unit_and_normalized_value_preserved(normalizer: UnitNormalizer) -> None:
+    """When the LLM extractor provides clean normalized_value and unit, they are preserved."""
+    val, unit = normalizer.normalize_field(
+        raw_value="37 to 102 °F (2.8 to 38.9 °C)",
+        unit="°F",
+        normalized_value="37 to 102",
+    )
+    assert val == "37 to 102"
+    assert unit == "°F"
+
+
+def test_direct_unit_canonical_standardization(normalizer: UnitNormalizer) -> None:
+    """When unit is provided, canonical symbols are standardized (e.g. VAC -> V)."""
+    val, unit = normalizer.normalize_field(
+        raw_value="120 VAC 60Hz",
+        unit="VAC",
+        normalized_value="120",
+    )
+    assert val == "120"
+    assert unit == "V"

@@ -165,15 +165,19 @@ Respond ONLY with a valid JSON object containing an 'attributes' list of \
 technical specifications found in the document (dimensions, electrical ratings, \
 capacities, airflow, pressures, materials, thread specs, etc.).
 
+For every technical attribute, output:
+- `raw_value`: The exact verbatim string found in the text (e.g. "37 to 102 °F (2.8 to 38.9 °C)", "5 to 90% non-condensing", "120 VAC", "800 CFM").
+- `normalized_value`: Clean numeric value or range (strip secondary unit conversions and descriptive words like 'non-condensing', e.g. "37 to 102", "5 to 90", "120", "800").
+- `unit`: The standardized unit symbol (e.g. °F, °C, %, VAC, V, A, CFM, psi, in, mm), or null if unitless.
+
 Rules:
 - Format: {"attributes": [{"field_name": "...", "raw_value": "...", "normalized_value": "...", "unit": "...", "confidence_score": 0.95, "source_url": "..."}]}
 - "field_name" is a short, snake_case label for the attribute.
 - Each "field_name" MUST be unique within the response — never repeat a \
 field_name, even if the same value appears in several places.
-- "raw_value" is the verbatim value as written in the document (e.g. "10mm", \
-"120 VAC", "800 CFM").
-- "normalized_value" may be a cleaned copy of the raw value.
-- "unit" is the unit symbol when one is present, otherwise null.
+- "raw_value" is the exact verbatim text from the source document.
+- "normalized_value" is the clean numeric value or range without secondary conversions or words.
+- "unit" is the primary standardized unit symbol, or null if unitless.
 - "confidence_score" is a float between 0.0 and 1.0 reflecting how confident \
 you are in the extraction.
 - "source_url" MUST be exactly the source URL provided by the user — do not \
@@ -766,7 +770,10 @@ class StructuredExtractor:
             if attribute is None:
                 continue
             normalized_value, unit = self.normalizer.normalize_field(
-                attribute.raw_value, field_name=attribute.field_name
+                attribute.raw_value,
+                field_name=attribute.field_name,
+                unit=attribute.unit,
+                normalized_value=attribute.normalized_value,
             )
             processed.append(
                 attribute.model_copy(

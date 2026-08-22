@@ -276,34 +276,38 @@ class UnitNormalizer:
     # -- public API --------------------------------------------------------
 
     def normalize_field(
-        self, raw_value: str, field_name: str | None = None
+        self,
+        raw_value: str,
+        field_name: str | None = None,
+        unit: str | None = None,
+        normalized_value: str | None = None,
     ) -> tuple[str, str | None]:
         """Normalize *raw_value* into a ``(normalized_value, unit)`` tuple.
+
+        If *unit* is already provided and *normalized_value* is present
+        (e.g. from structured LLM extraction), they are preserved with canonical
+        symbol resolution. Otherwise, fallback regex grammar parses *raw_value*.
 
         *field_name* is optional attribute context: when it marks a
         spatial/rotational attribute (``rotation``, ``angle``, ``stroke``,
         ``position``), a bare ``deg``/``degree(s)`` unit is preserved as
         angular degrees instead of being fuzzy-matched to degrees Fahrenheit.
-
-        Grammar-first: a single structural regex splits any leading numeric
-        expression — decimals, fractions (``1/3``), mixed numbers
-        (``1 1/2``) and dash / word / slash ranges (``20-30``, ``37 to 102``,
-        ``10/16``) — from its trailing text suffix. Fractions become standard
-        numeric strings (``1/3`` -> ``0.333``); ranges become hyphenated
-        ``lo-hi`` strings (``20 to 25`` -> ``20-25``). When the suffix cannot
-        be resolved to a canonical unit, the universal fallback keeps the
-        split and reports the cleaned suffix as the unit (``"1075 RPM"`` ->
-        ``("1075", "RPM")``) instead of discarding it.
-
-        Returns ``(raw_value, None)`` unchanged when the value cannot be
-        parsed, so callers can safely fall back to the original text.
         """
-        text = raw_value.strip()
-        if not text:
-            return text, None
-
-        # Field-name context for angular-degree resolution ("rotation: 90 deg").
+        text = raw_value.strip() if raw_value else ""
         angular = self._is_angular_field(field_name)
+
+        # Direct pass-through: if unit is already provided and normalized_value is given
+        if unit is not None and str(unit).strip() and normalized_value is not None and str(normalized_value).strip():
+            clean_unit = str(unit).strip()
+            clean_norm = str(normalized_value).strip()
+            # If normalized_value was cleanly extracted without trailing unit words
+            if clean_norm != text or not any(clean_norm.endswith(u) for u in ("mm", "cm", "m", "in", "ft", "VAC", "VDC", "CFM", "psi", "tons", "RPM")):
+                canonical = self._resolve_unit(clean_unit, angular=angular)
+                final_unit = UNIT_SYMBOLS.get(canonical, clean_unit) if canonical else clean_unit
+                return clean_norm, final_unit
+
+        if not text:
+            return normalized_value if normalized_value is not None else "", unit
 
         # Pre-normalize: Unicode minus (datasheets often use U+2212 instead of
         # ASCII '-') and thousands separators ("1,200" -> "1200"; European
