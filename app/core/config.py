@@ -56,9 +56,9 @@ class Settings(BaseSettings):
         return keys
 
     # --- LLM Model Identifiers ------------------------------------------
-    primary_model: str = "llama-3.3-70b-versatile"
-    fallback_model: str = "llama-3.3-70b-versatile"
-    secondary_fallback_model: str = "llama-3.3-70b-versatile"
+    primary_model: str = "openai/gpt-oss-20b"
+    fallback_model: str = "openai/gpt-oss-120b"
+    secondary_fallback_model: str = "openai/gpt-oss-20b"
 
     # --- Database / Persistence -----------------------------------------
     database_path: str = "unipulse_checkpoint.db"

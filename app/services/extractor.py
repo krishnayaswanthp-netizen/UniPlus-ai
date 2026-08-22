@@ -53,9 +53,9 @@ from app.services.rate_limiter import (
 )
 
 #: Preferred Groq model for structured extraction.
-PRIMARY_MODEL = "llama-3.3-70b-versatile"
+PRIMARY_MODEL = "openai/gpt-oss-20b"
 #: Fallback model used when the primary model fails.
-FALLBACK_MODEL = "llama-3.3-70b-versatile"
+FALLBACK_MODEL = "openai/gpt-oss-120b"
 
 #: Strict JSON Schema for Groq Structured Outputs
 INDUSTRIAL_ATTRIBUTES_SCHEMA = {
@@ -643,9 +643,9 @@ class StructuredExtractor:
                                 or "model_decommissioned" in err_msg
                             ):
                                 active_fallback = (
-                                    "llama-3.3-70b-versatile"
-                                    if model != "llama-3.3-70b-versatile"
-                                    else "llama-3.1-8b-instant"
+                                    "openai/gpt-oss-20b"
+                                    if model != "openai/gpt-oss-20b"
+                                    else "openai/gpt-oss-120b"
                                 )
                                 logger.warning(
                                     "Model %s returned error (%s); attempting fallback to %s",

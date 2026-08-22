@@ -342,13 +342,18 @@ export default function BatchCatalogPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef(null);
 
-  // Poll backend for 20-row chunk background processing status
+  // Poll backend for micro-chunk background processing status
   useEffect(() => {
     if (!activeJobId || status === 'done') return undefined;
+
+    let isMounted = true;
+    let timer = null;
 
     const pollJob = async () => {
       try {
         const job = await getBatchStatus(activeJobId);
+        if (!isMounted) return;
+
         setTotalItems(job.total_rows);
         setCompletedItems(job.completed_rows);
 
@@ -362,7 +367,7 @@ export default function BatchCatalogPage() {
         setResult(mappedResult);
         setBatchResult(mappedResult);
 
-        if (job.completed_rows >= 20 || (job.records && job.records.length > 0)) {
+        if (job.completed_rows >= 4 || (job.records && job.records.length > 0)) {
           if (statusRef.current === 'uploading' || statusRef.current === 'processing') {
             setStatus('streaming');
           }
@@ -371,6 +376,7 @@ export default function BatchCatalogPage() {
         if (job.is_complete) {
           setStatus('done');
           setActiveJobId(null);
+          if (timer) window.clearInterval(timer);
           notify(
             `Batch complete — ${job.succeeded_count} enriched, ${job.failed_count} failed.`,
             job.failed_count === 0 ? 'success' : 'info'
@@ -378,12 +384,25 @@ export default function BatchCatalogPage() {
         }
       } catch (err) {
         console.error('Error polling batch status:', err);
+        const statusCode = err?.response?.status || err?.status;
+        if (statusCode === 404) {
+          if (timer) window.clearInterval(timer);
+          if (isMounted) {
+            setActiveJobId(null);
+            setStatus('idle');
+            setApiError('Batch session expired or server restarted. Please re-run the batch.');
+            notify('Batch session expired or server restarted. Please re-run the batch.', 'error');
+          }
+        }
       }
     };
 
     pollJob();
-    const timer = window.setInterval(pollJob, 2000);
-    return () => window.clearInterval(timer);
+    timer = window.setInterval(pollJob, 2000);
+    return () => {
+      isMounted = false;
+      if (timer) window.clearInterval(timer);
+    };
   }, [activeJobId, status]);
 
   const clearErrors = () => {

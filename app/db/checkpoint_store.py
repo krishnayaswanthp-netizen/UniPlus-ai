@@ -116,6 +116,24 @@ class CheckpointStore:
                 """
             )
 
+            # 4. Batch Jobs Table
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS batch_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    total_rows INTEGER NOT NULL,
+                    completed_rows INTEGER DEFAULT 0,
+                    succeeded_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    is_complete INTEGER DEFAULT 0,
+                    avg_confidence REAL DEFAULT 0.0,
+                    records_json TEXT DEFAULT '[]',
+                    created_at REAL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
     # --- CHECKPOINT OPERATIONS ---
 
     def save_checkpoint(self, record: ProductRecord) -> None:
@@ -256,4 +274,76 @@ class CheckpointStore:
             row = cursor.fetchone()
             if row:
                 return row["cleaned_text"]
+        return None
+
+    # --- BATCH JOB OPERATIONS ---
+
+    def save_batch_job(self, job_dict: dict[str, Any]) -> None:
+        """Persist or update a batch enrichment job state in SQLite."""
+        job_id = str(job_dict.get("job_id", ""))
+        if not job_id:
+            return
+        records_json = json.dumps(job_dict.get("records", []))
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO batch_jobs (
+                    job_id, total_rows, completed_rows, succeeded_count,
+                    failed_count, is_complete, avg_confidence, records_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    total_rows=excluded.total_rows,
+                    completed_rows=excluded.completed_rows,
+                    succeeded_count=excluded.succeeded_count,
+                    failed_count=excluded.failed_count,
+                    is_complete=excluded.is_complete,
+                    avg_confidence=excluded.avg_confidence,
+                    records_json=excluded.records_json,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    job_id,
+                    int(job_dict.get("total_rows", 0)),
+                    int(job_dict.get("completed_rows", 0)),
+                    int(job_dict.get("succeeded_count", 0)),
+                    int(job_dict.get("failed_count", 0)),
+                    1 if job_dict.get("is_complete") else 0,
+                    float(job_dict.get("avg_confidence", 0.0)),
+                    records_json,
+                    float(job_dict.get("created_at", 0.0)),
+                ),
+            )
+
+    def get_batch_job(self, job_id: str) -> dict[str, Any] | None:
+        """Retrieve a saved batch job record by *job_id*."""
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT job_id, total_rows, completed_rows, succeeded_count,
+                       failed_count, is_complete, avg_confidence, records_json, created_at
+                FROM batch_jobs WHERE job_id = ?
+                """,
+                (job_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                records = []
+                try:
+                    records = json.loads(row["records_json"])
+                except Exception:
+                    pass
+                return {
+                    "job_id": row["job_id"],
+                    "total_rows": row["total_rows"],
+                    "completed_rows": row["completed_rows"],
+                    "succeeded_count": row["succeeded_count"],
+                    "failed_count": row["failed_count"],
+                    "is_complete": bool(row["is_complete"]),
+                    "avg_confidence": row["avg_confidence"],
+                    "records": records,
+                    "created_at": row["created_at"],
+                }
         return None

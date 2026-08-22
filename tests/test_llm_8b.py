@@ -215,7 +215,7 @@ def test_parse_retry_after_reads_groq_message_body() -> None:
     """The TPM message hint ("Please try again in X.XXXs") is honored even
     when no Retry-After header is present."""
     err = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per "
+        "Rate limit reached for model openai/gpt-oss-120b on tokens per "
         "minute (TPM): Limit 12000, Used 11898, Requested 886. "
         "Please try again in 3.455s."
     )

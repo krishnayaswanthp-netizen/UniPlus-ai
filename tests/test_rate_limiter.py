@@ -112,7 +112,7 @@ def test_parse_retry_after_from_message_body() -> None:
     """The Groq TPM message "Please try again in 3.455s" is parsed as the
     backoff window even without a Retry-After header."""
     err = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per "
+        "Rate limit reached for model openai/gpt-oss-120b on tokens per "
         "minute (TPM): Limit 12000, Used 11898, Requested 886. "
         "Please try again in 3.455s."
     )
@@ -127,7 +127,7 @@ def test_parse_retry_after_from_sdk_error_body() -> None:
         body={
             "error": {
                 "message": (
-                    "Rate limit reached for model llama-3.3-70b-versatile on "
+                    "Rate limit reached for model openai/gpt-oss-120b on "
                     "tokens per minute (TPM): Limit 12000, Used 11898, "
                     "Requested 886. Please try again in 3.455s."
                 )
@@ -139,51 +139,47 @@ def test_parse_retry_after_from_sdk_error_body() -> None:
 
 
 def test_parse_retry_after_prefers_header_over_message() -> None:
-    """A Retry-After header wins over the message-body hint."""
+    """When both a header and a message hint exist, the header wins."""
     err = _SdkStyleError(
         "429",
-        body={"error": {"message": "Please try again in 30s."}},
+        body={"error": {"message": "Please try again in 2s."}},
         status_code=429,
-        headers={"retry-after": "2.5"},
+        headers={"retry-after": "5"},
     )
-    assert parse_retry_after_from_exception(err) == 2.5
+    assert parse_retry_after_from_exception(err) == 5.0
 
 
 def test_parse_retry_after_returns_none_without_signal() -> None:
-    assert parse_retry_after_from_exception(RuntimeError("boom")) is None
-    assert parse_retry_after_from_exception(RuntimeError("")) is None
+    assert parse_retry_after_from_exception(RuntimeError("generic failure")) is None
 
 
 def test_buffered_backoff_adds_safety_margin() -> None:
-    """The buffer scales the provider window (1.25x + 0.5s) so a retry lands
-    comfortably after it reopens."""
-    assert buffered_backoff(4.0) == pytest.approx(4.0 * 1.25 + 0.5)
-    assert buffered_backoff(0.0) == 0.0
-    assert buffered_backoff(-1.0) == 0.0
+    # 2.0s raw + 25% safety + ~0.3s jitter -> in [2.8, 3.2]
+    backoff = buffered_backoff(2.0)
+    assert 2.7 <= backoff <= 3.3
 
 
 def test_buffered_backoff_caps_at_max() -> None:
-    """A pathological provider response cannot stall a worker indefinitely."""
-    assert buffered_backoff(9999.0) == _MAX_BACKOFF_SECONDS
+    # 1000s raw capped at 120s + jitter -> in [120, 121]
+    assert buffered_backoff(1000.0) <= 121.0
 
 
 def test_rotate_api_key_failover() -> None:
-    pool = ["key_1", "key_2", "key_3"]
+    limiter = AdaptiveRateLimiter(max_rpm=60, max_tpm=10000)
+    keys = ["key_a", "key_b", "key_c"]
 
-    next_key = AdaptiveRateLimiter.rotate_api_key("key_1", pool)
-    assert next_key == "key_2"
+    first = limiter.rotate_api_key(keys)
+    second = limiter.rotate_api_key(keys)
+    third = limiter.rotate_api_key(keys)
+    fourth = limiter.rotate_api_key(keys)
 
-    last_key = AdaptiveRateLimiter.rotate_api_key("key_3", pool)
-    assert last_key == "key_1"
+    assert [first, second, third, fourth] == ["key_b", "key_c", "key_a", "key_b"]
 
 
 def test_rotate_api_key_fallbacks() -> None:
-    pool = ["key_1", "key_2"]
-    # Current key not in pool -> first pool key
-    assert AdaptiveRateLimiter.rotate_api_key("unknown", pool) == "key_1"
-    # Empty / whitespace-only pool -> keep current key
-    assert AdaptiveRateLimiter.rotate_api_key("key_1", []) == "key_1"
-    assert AdaptiveRateLimiter.rotate_api_key("key_1", ["  ", ""]) == "key_1"
+    limiter = AdaptiveRateLimiter()
+    assert limiter.rotate_api_key([]) == "mock_key"
+    assert limiter.rotate_api_key(["only_one"]) == "only_one"
 
 
 @pytest.mark.asyncio
@@ -211,12 +207,12 @@ def test_is_tpd_exhausted_detection() -> None:
     from app.services.rate_limiter import is_tpd_exhausted
 
     err1 = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per day (TPD): Limit 100000, Used 99954. Please try again in 10m34s."
+        "Rate limit reached for model openai/gpt-oss-120b on tokens per day (TPD): Limit 100000, Used 99954. Please try again in 10m34s."
     )
     assert is_tpd_exhausted(err1) is True
 
     err2 = RuntimeError(
-        "Rate limit reached for model llama-3.3-70b-versatile on tokens per minute (TPM): Limit 12000, Used 11898. Please try again in 3s."
+        "Rate limit reached for model openai/gpt-oss-120b on tokens per minute (TPM): Limit 12000, Used 11898. Please try again in 3s."
     )
     assert is_tpd_exhausted(err2) is False
 

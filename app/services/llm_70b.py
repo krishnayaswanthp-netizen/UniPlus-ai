@@ -2,7 +2,7 @@
 app/services/llm_70b.py
 Stage 9: 70B Fallback LLM Extractor for UniPulse AI.
 
-Fallback extractor using Groq's ``llama-3.3-70b-versatile`` model, triggered
+Fallback extractor using Groq's ``openai/gpt-oss-120b`` model, triggered
 only when Stage 8 validation fails. Uses a targeted repair prompt that names
 the exact validation flags (e.g. ``INVALID_VOLTAGE_NEGATIVE``), acquires rate
 limiter capacity, tags every extracted attribute with
@@ -97,7 +97,7 @@ def repair_json_string(json_str: str) -> str:
 
 class LLM70BFallbackExtractor:
     """
-    Fallback LLM Extractor using Groq's llama-3.3-70b-versatile model.
+    Fallback LLM Extractor using Groq's openai/gpt-oss-120b model.
     Triggered only when Stage 8 validation fails. Uses targeted repair prompts,
     acquires rate limiter capacity, tags attributes with source = LLM_70B_FALLBACK,
     and re-validates results before routing to PROVENANCE_MERGE or MANUAL_REVIEW.
@@ -106,7 +106,7 @@ class LLM70BFallbackExtractor:
     def __init__(
         self,
         api_keys: Optional[List[str]] = None,
-        model_name: str = "llama-3.3-70b-versatile",
+        model_name: str = "openai/gpt-oss-120b",
         rate_limiter: Optional[AdaptiveRateLimiter] = None,
         validator: Optional[ValidationEngine] = None,
     ) -> None:
@@ -297,7 +297,7 @@ class LLM70BFallbackExtractor:
                     except Exception as model_err:
                         err_str = str(model_err).lower()
                         if "404" in err_str or "model_not_found" in err_str or "decommissioned" in err_str:
-                            fallback_m = "llama-3.1-8b-instant" if "8b" not in self.model_name else "llama-3.3-70b-versatile"
+                            fallback_m = "openai/gpt-oss-20b" if "20b" not in self.model_name else "openai/gpt-oss-120b"
                             logger.warning(
                                 "70B model %s returned 404/not_found; failing over to %s",
                                 self.model_name,
@@ -427,9 +427,9 @@ class LLM70BFallbackExtractor:
                 if is_tpd_exhausted(exc) or "429" in exc_str or "rate limit" in exc_str:
                     if is_tpd_exhausted(exc):
                         logger.warning(
-                            "70B TPD (Tokens Per Day) quota depleted; switching fallback model to llama-3.1-8b-instant"
+                            "70B TPD (Tokens Per Day) quota depleted; switching fallback model to openai/gpt-oss-20b"
                         )
-                        self.model_name = "llama-3.1-8b-instant"
+                        self.model_name = "openai/gpt-oss-20b"
 
                     backoff = self.rate_limiter.handle_429(
                         retry_after_seconds=_parse_retry_after(exc)

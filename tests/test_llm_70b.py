@@ -266,7 +266,7 @@ def test_repair_json_string():
 async def test_extract_fallback_tpd_exhaustion_switches_model():
     limiter = AdaptiveRateLimiter(max_rpm=10, max_tpm=5000)
     extractor = LLM70BFallbackExtractor(api_keys=["key1"], rate_limiter=limiter)
-    assert extractor.model_name == "llama-3.3-70b-versatile"
+    assert extractor.model_name == "openai/gpt-oss-120b"
 
     identity = ProductIdentity(
         row_id=1,
@@ -287,8 +287,8 @@ async def test_extract_fallback_tpd_exhaustion_switches_model():
     tpd_client = TPDErrorClient()
     await extractor.extract_fallback(record, "Voltage: 24V", client_override=tpd_client)
 
-    # Upon TPD exhaustion, the model name switches to llama-3.1-8b-instant
-    assert extractor.model_name == "llama-3.1-8b-instant"
+    # Upon TPD exhaustion, the model name switches to openai/gpt-oss-20b
+    assert extractor.model_name == "openai/gpt-oss-20b"
     assert len(record.errors) > 0
 
 

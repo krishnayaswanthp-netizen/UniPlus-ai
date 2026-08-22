@@ -879,11 +879,15 @@ async def _process_batch_background(
         else:
             job["avg_confidence"] = 0.0
 
+        # Persist chunk progress to SQLite
+        await asyncio.to_thread(_checkpoint_store.save_batch_job, job)
+
         # Trigger garbage collection between micro-chunks to keep memory strictly < 250MB
         import gc
         gc.collect()
 
     job["is_complete"] = True
+    await asyncio.to_thread(_checkpoint_store.save_batch_job, job)
 
 
 @app.post("/api/v1/enrich/batch")
@@ -904,7 +908,7 @@ async def enrich_batch(
     rows = await asyncio.to_thread(_read_batch_rows, file.filename or "", raw)
 
     job_id = str(uuid.uuid4())
-    _BATCH_JOBS[job_id] = {
+    job_record = {
         "job_id": job_id,
         "total_rows": len(rows),
         "completed_rows": 0,
@@ -915,6 +919,8 @@ async def enrich_batch(
         "records": [],
         "created_at": time.time(),
     }
+    _BATCH_JOBS[job_id] = job_record
+    await asyncio.to_thread(_checkpoint_store.save_batch_job, job_record)
 
     if sync:
         await _process_batch_background(job_id, rows, extractors, chunk_size=4)
@@ -939,6 +945,10 @@ async def enrich_batch(
 async def get_batch_status(job_id: str) -> dict[str, Any]:
     """Return current job processing state and records for a batch upload."""
     job = _BATCH_JOBS.get(job_id)
+    if not job:
+        job = await asyncio.to_thread(_checkpoint_store.get_batch_job, job_id)
+        if job:
+            _BATCH_JOBS[job_id] = job
     if not job:
         raise HTTPException(status_code=404, detail=f"Batch job '{job_id}' not found")
     return {

@@ -46,7 +46,7 @@ profile. The engine:
    are always rejected),
 2. parses any uploaded PDF datasheet (PyMuPDF text + table extraction),
 3. extracts structured attributes with a Groq-hosted LLM
-   (`llama-3.3-70b-versatile`, with an automatic `llama-3.1-8b-instant`
+   (`openai/gpt-oss-20b`, with an automatic `openai/gpt-oss-120b`
    fallback and exponential-backoff retries on 429/5xx),
 4. normalizes every value and unit deterministically, and
 5. stamps the exact `source_url` and a `confidence_score` on each attribute.
