@@ -56,9 +56,9 @@ class Settings(BaseSettings):
         return keys
 
     # --- LLM Model Identifiers ------------------------------------------
-    primary_model: str = "llama-3.1-8b-instant"
-    fallback_model: str = "llama-3.1-70b-versatile"
-    secondary_fallback_model: str = "llama-3.1-8b-instant"
+    primary_model: str = "llama-3.3-70b-versatile"
+    fallback_model: str = "llama-3.3-70b-versatile"
+    secondary_fallback_model: str = "llama-3.3-70b-versatile"
 
     # --- Database / Persistence -----------------------------------------
     database_path: str = "unipulse_checkpoint.db"

@@ -266,7 +266,7 @@ def test_repair_json_string():
 async def test_extract_fallback_tpd_exhaustion_switches_model():
     limiter = AdaptiveRateLimiter(max_rpm=10, max_tpm=5000)
     extractor = LLM70BFallbackExtractor(api_keys=["key1"], rate_limiter=limiter)
-    assert extractor.model_name == "llama-3.1-70b-versatile"
+    assert extractor.model_name == "llama-3.3-70b-versatile"
 
     identity = ProductIdentity(
         row_id=1,
