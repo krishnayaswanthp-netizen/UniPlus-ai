@@ -165,21 +165,22 @@ def test_buffered_backoff_caps_at_max() -> None:
 
 
 def test_rotate_api_key_failover() -> None:
-    limiter = AdaptiveRateLimiter(max_rpm=60, max_tpm=10000)
-    keys = ["key_a", "key_b", "key_c"]
+    pool = ["key_1", "key_2", "key_3"]
 
-    first = limiter.rotate_api_key(keys)
-    second = limiter.rotate_api_key(keys)
-    third = limiter.rotate_api_key(keys)
-    fourth = limiter.rotate_api_key(keys)
+    next_key = AdaptiveRateLimiter.rotate_api_key("key_1", pool)
+    assert next_key == "key_2"
 
-    assert [first, second, third, fourth] == ["key_b", "key_c", "key_a", "key_b"]
+    last_key = AdaptiveRateLimiter.rotate_api_key("key_3", pool)
+    assert last_key == "key_1"
 
 
 def test_rotate_api_key_fallbacks() -> None:
-    limiter = AdaptiveRateLimiter()
-    assert limiter.rotate_api_key([]) == "mock_key"
-    assert limiter.rotate_api_key(["only_one"]) == "only_one"
+    pool = ["key_1", "key_2"]
+    # Current key not in pool -> first pool key
+    assert AdaptiveRateLimiter.rotate_api_key("unknown", pool) == "key_1"
+    # Empty / whitespace-only pool -> keep current key
+    assert AdaptiveRateLimiter.rotate_api_key("key_1", []) == "key_1"
+    assert AdaptiveRateLimiter.rotate_api_key("key_1", ["  ", ""]) == "key_1"
 
 
 @pytest.mark.asyncio
